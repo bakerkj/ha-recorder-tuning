@@ -1,0 +1,116 @@
+run_purge_now:
+  name: Run Purge Now
+  description: >-
+    Immediately execute all enabled purge rules without waiting for the
+    scheduled time. Pass dry_run: true to log what would be deleted without
+    actually removing any data.
+  fields:
+    dry_run:
+      name: Dry Run
+      description: >-
+        When true, logs the entity name, row count, and date range of data that
+        would be deleted for each rule — without deleting anything. When
+        omitted, inherits the dry_run setting from the integration's
+        configuration, so the service call behaves identically to the scheduled
+        nightly run.
+      required: false
+      selector:
+        boolean:
+
+add_rule:
+  name: Add Rule
+  description:
+    Add or update a purge rule dynamically from an automation or script.
+  fields:
+    name:
+      name: Rule Name
+      description: Unique name for this rule.
+      required: true
+      example: "Frigate high-frequency"
+      selector:
+        text:
+    integration_filter:
+      name: Integrations
+      description: >-
+        List of integration/platform names. All entities from these integrations
+        are included (e.g. frigate, esphome, zha).
+      required: false
+      example: ["frigate", "esphome"]
+      selector:
+        object:
+    device_ids:
+      name: Device IDs
+      description: >-
+        Device IDs whose entities should all be included. Find IDs in Settings →
+        Devices & Services → (device) → URL.
+      required: false
+      selector:
+        object:
+    entity_ids:
+      name: Entity IDs
+      description: Explicit list of entity IDs to include.
+      required: false
+      selector:
+        object:
+    entity_globs:
+      name: Entity Glob Patterns
+      description: >-
+        Glob patterns matched against all registered entity IDs (e.g.
+        sensor.frigate_*_fps).
+      required: false
+      example: ["sensor.frigate_*_fps", "sensor.gpu_*"]
+      selector:
+        object:
+    entity_regex_include:
+      name: Entity Regex Include
+      description: >-
+        Regular expression patterns. Entities matching any pattern are included.
+        Applied after all positive selectors; union with them.
+      required: false
+      example: ["^sensor\\.frigate_.*_(fps|skipped)$"]
+      selector:
+        object:
+    entity_regex_exclude:
+      name: Entity Regex Exclude
+      description: >-
+        Regular expression patterns. Entities matching any pattern are removed
+        from the candidate set even if matched by another selector.
+      required: false
+      example: ["_debug$", "_raw$"]
+      selector:
+        object:
+    keep_days:
+      name: Keep Days
+      description: Days of recorder history to retain for matched entities.
+      required: true
+      example: 7
+      selector:
+        number:
+          min: 1
+          max: 365
+          unit_of_measurement: days
+    enabled:
+      name: Enabled
+      description: Whether this rule is active.
+      required: false
+      default: true
+      selector:
+        boolean:
+
+remove_rule:
+  name: Remove Rule
+  description: Remove a purge rule by name.
+  fields:
+    name:
+      name: Rule Name
+      description: Name of the rule to remove.
+      required: true
+      selector:
+        text:
+
+reload:
+  name: Reload
+  description: >-
+    Reload rules from recorder_tuning.yaml in the HA config directory. If the
+    file does not exist, reverts to rules stored via the UI/services. Use this
+    after editing the YAML file without restarting Home Assistant.
