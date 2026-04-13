@@ -297,7 +297,7 @@ class RecorderTuningManager:
         try:
             h, m = purge_time_str.split(":")
             purge_time = time(int(h), int(m), 0)
-        except ValueError, AttributeError:
+        except (ValueError, AttributeError):
             _LOGGER.warning(
                 "recorder_tuning: invalid purge_time '%s', defaulting to 03:00",
                 purge_time_str,
