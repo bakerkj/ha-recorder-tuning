@@ -2,13 +2,11 @@
 name = "ha-recorder-tuning"
 version = "0.1.0"
 description = "Home Assistant integration that adds per-entity purge rules for recorder history and decouples short-term statistics retention from purge_keep_days."
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 dependencies = []
 
 [dependency-groups]
 dev = [
-  "pytest>=8.2",
-  "pytest-asyncio>=0.24",
   "pytest-homeassistant-custom-component>=0.13.205",
 ]
 lint = [
