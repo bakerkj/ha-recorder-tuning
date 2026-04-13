@@ -38,7 +38,7 @@ directory and restart Home Assistant.
    Tuning**.
 2. Set your preferred **daily purge time** (24h format, e.g. `03:00`).
 3. Set the **short-term statistics retention** in days (must be ≥ your
-   recorder's `purge_keep_days`; default 60).
+   recorder's `purge_keep_days`; default 30).
 4. Leave **dry-run mode** enabled (the default) until you have reviewed the logs
    and confirmed your rules are correct.
 5. Click **Configure** on the integration card to add entity purge rules.
@@ -119,9 +119,11 @@ Each rule targets a set of entities and assigns a `keep_days` value. Open
 
 ### Rule matching
 
-Rules are evaluated in order; the **first matching rule** wins. Place more
-specific rules (explicit entity IDs, integration + regex) before broad
-integration-wide rules.
+All enabled rules are applied on every purge run. If an entity matches more than
+one rule, **every matching rule runs** and the most aggressive `keep_days`
+(lowest value) determines how much history is kept. Place more specific rules
+with narrower `keep_days` before broad integration-wide rules only for
+readability — order does not affect the result.
 
 ### Target selectors
 

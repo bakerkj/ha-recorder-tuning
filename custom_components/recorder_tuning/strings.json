@@ -27,7 +27,7 @@
     "step": {
       "menu": {
         "title": "Recorder Tuning",
-        "description": "Purge rules:\n{rules}\n\nDry-run mode: {dry_run}",
+        "description": "Purge rules:\n{rules}\n\nDry-run mode: {dry_run}\nYAML rules: {yaml_active}",
         "menu_options": {
           "set_schedule": "Change purge schedule",
           "set_stats_retention": "Change statistics retention",

@@ -53,12 +53,9 @@ def yaml_config(integration_entry: tuple[HomeAssistant, Any]):
     hass, _ = integration_entry
     yaml_path = hass.config.path(YAML_CONFIG_FILE)
 
-    written_paths: list[str] = []
-
     def _write(content: str) -> str:
         with open(yaml_path, "w", encoding="utf-8") as fh:
             fh.write(content)
-        written_paths.append(yaml_path)
         return yaml_path
 
     yield hass, _write

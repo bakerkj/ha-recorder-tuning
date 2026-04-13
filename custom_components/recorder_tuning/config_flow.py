@@ -86,9 +86,11 @@ class RecorderTuningConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # typ
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_PURGE_TIME, default=DEFAULT_PURGE_TIME): str,
+                    # min=1 is safe: the patch uses min(recorder_cutoff, stats_cutoff)
+                    # so it can never purge more aggressively than the recorder would.
                     vol.Required(
                         CONF_STATS_KEEP_DAYS, default=DEFAULT_STATS_KEEP_DAYS
-                    ): vol.All(int, vol.Range(min=10, max=365)),
+                    ): vol.All(int, vol.Range(min=1, max=365)),
                     vol.Optional(CONF_DRY_RUN, default=DEFAULT_DRY_RUN): bool,
                 }
             ),
@@ -111,14 +113,25 @@ class RecorderTuningOptionsFlow(config_entries.OptionsFlow):
         self.config_entry = config_entry
         self._rules: list[dict] = []
         self._editing_index: int | None = None
+        self._yaml_active: bool = False
 
     async def async_step_init(
         self, user_input: dict | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Load rules and show main menu."""
-        store = storage.Store(self.hass, STORAGE_VERSION, STORAGE_KEY)
-        data = await store.async_load() or {CONF_RULES: []}
-        self._rules = data.get(CONF_RULES, [])
+        """Load rules from the live manager (or storage if manager isn't available)."""
+        from .const import DOMAIN as _DOMAIN  # noqa: PLC0415
+
+        manager = self.hass.data.get(_DOMAIN, {}).get(self.config_entry.entry_id)
+        if manager is not None:
+            # Use the manager's in-memory state so the UI always reflects what is
+            # actually active (YAML rules when yaml_active=True, stored rules otherwise).
+            self._rules = list(manager.rules)
+            self._yaml_active = manager.yaml_active
+        else:
+            store = storage.Store(self.hass, STORAGE_VERSION, STORAGE_KEY)
+            data = await store.async_load() or {CONF_RULES: []}
+            self._rules = data.get(CONF_RULES, [])
+            self._yaml_active = False
         return await self.async_step_menu()
 
     async def async_step_menu(
@@ -136,6 +149,11 @@ class RecorderTuningOptionsFlow(config_entries.OptionsFlow):
         dry_run_status = (
             "ON" if self.config_entry.data.get(CONF_DRY_RUN, DEFAULT_DRY_RUN) else "OFF"
         )
+        yaml_status = (
+            "ON (edit recorder_tuning.yaml and call reload)"
+            if self._yaml_active
+            else "OFF"
+        )
         return self.async_show_menu(
             step_id="menu",
             menu_options=[
@@ -147,7 +165,11 @@ class RecorderTuningOptionsFlow(config_entries.OptionsFlow):
                 "remove_rule",
                 "done",
             ],
-            description_placeholders={"rules": rules_text, "dry_run": dry_run_status},
+            description_placeholders={
+                "rules": rules_text,
+                "dry_run": dry_run_status,
+                "yaml_active": yaml_status,
+            },
         )
 
     # ------------------------------------------------------------------ #
@@ -225,8 +247,10 @@ class RecorderTuningOptionsFlow(config_entries.OptionsFlow):
             step_id="set_stats_retention",
             data_schema=vol.Schema(
                 {
+                    # min=1 is safe: the patch uses min(recorder_cutoff, stats_cutoff)
+                    # so it can never purge more aggressively than the recorder would.
                     vol.Required(CONF_STATS_KEEP_DAYS, default=current): vol.All(
-                        int, vol.Range(min=10, max=365)
+                        int, vol.Range(min=1, max=365)
                     )
                 }
             ),
@@ -240,6 +264,9 @@ class RecorderTuningOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict | None = None
     ) -> config_entries.ConfigFlowResult:
         """Add a new purge rule."""
+        if self._yaml_active:
+            return await self.async_step_menu()
+
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -259,7 +286,7 @@ class RecorderTuningOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict | None = None
     ) -> config_entries.ConfigFlowResult:
         """Select a rule to edit."""
-        if not self._rules:
+        if self._yaml_active or not self._rules:
             return await self.async_step_menu()
 
         if user_input is not None:
@@ -315,7 +342,7 @@ class RecorderTuningOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict | None = None
     ) -> config_entries.ConfigFlowResult:
         """Select a rule to remove."""
-        if not self._rules:
+        if self._yaml_active or not self._rules:
             return await self.async_step_menu()
 
         if user_input is not None:

@@ -180,12 +180,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    manager: RecorderTuningManager | None = hass.data[DOMAIN].pop(entry.entry_id, None)
+    domain_data: dict = hass.data.get(DOMAIN, {})
+    manager: RecorderTuningManager | None = domain_data.pop(entry.entry_id, None)
     if manager:
         manager.async_unload()
 
     # Restore the original purge function if we patched it
-    original_fn = hass.data[DOMAIN].pop(_ORIG_PURGE_FN_KEY, None)
+    original_fn = domain_data.pop(_ORIG_PURGE_FN_KEY, None)
     if original_fn is not None:
         try:
             from homeassistant.components.recorder import purge as recorder_purge  # noqa: PLC0415
@@ -204,7 +205,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 def _apply_stats_patch(hass: HomeAssistant, stats_keep_days: int) -> None:
-    """Monkey-patch recorder purge to use a longer cutoff for short-term statistics."""
+    """Monkey-patch recorder purge to use a longer cutoff for short-term statistics.
+
+    ``stats_keep_days`` is only used in the initial INFO log message.  The
+    replacement closure always reads the value live from the first config entry
+    at the moment each recorder purge runs, so changes to the setting take
+    effect on the very next purge without re-calling this function.
+    """
     try:
         from homeassistant.components.recorder import purge as recorder_purge  # noqa: PLC0415
 
@@ -405,7 +412,7 @@ class RecorderTuningManager:
         # load time — the recorder component must be fully initialised first.
         from homeassistant.components.recorder import get_instance  # noqa: PLC0415
         from homeassistant.components.recorder.db_schema import States, StatesMeta  # noqa: PLC0415
-        from homeassistant.components.recorder.util import session_scope  # noqa: PLC0415
+        from homeassistant.helpers.recorder import session_scope  # noqa: PLC0415
         from sqlalchemy import func, select  # noqa: PLC0415
 
         cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
