@@ -1,0 +1,36 @@
+name: HA dev compatibility
+
+on:
+  schedule:
+    # Weekly early-warning: Mondays 07:00 UTC.
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "custom_components/recorder_tuning/__init__.py"
+      - "tests/test_ha_signature_compat.py"
+      - ".github/workflows/ha-dev-compat.yaml"
+
+jobs:
+  ha-dev-signature:
+    runs-on: ubuntu-latest
+    # Informational only — a red cross here means HA upstream changed, not
+    # that this branch is broken. Merges to master are not blocked.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: astral-sh/setup-uv@v8.0.0
+        with:
+          enable-cache: false
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.14"
+      - name: Install project deps
+        run: uv sync
+      - name: Override homeassistant with dev branch
+        run: |
+          uv pip install --upgrade \
+            "homeassistant @ git+https://github.com/home-assistant/core.git@dev"
+      - name: Run HA signature guard
+        run:
+          uv run --no-sync python -m pytest tests/test_ha_signature_compat.py -v
