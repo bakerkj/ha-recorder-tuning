@@ -172,8 +172,9 @@ def set_dry_run(hass: HomeAssistant, enabled: bool) -> None:
 def set_stats_keep_days(hass: HomeAssistant, days: int) -> None:
     """Update stats_keep_days on the live config entry.
 
-    The patch closure reads this value from the config entry at call time,
-    so the new value takes effect on the very next purge without reloading.
+    ``async_update_entry`` fires the config-entry update listener, which
+    calls ``manager.async_reload`` → ``_apply_stats_patch``. That refreshes
+    the cached retention value the patch closure reads at purge time.
     """
     entries = hass.config_entries.async_entries(DOMAIN)
     if not entries:

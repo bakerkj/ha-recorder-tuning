@@ -48,6 +48,13 @@ _LOGGER = logging.getLogger(__name__)
 
 # Key used to stash the original purge function so we can restore it on unload
 _ORIG_PURGE_FN_KEY = f"{DOMAIN}_original_purge_fn"
+# Cached stats_keep_days — written from the event loop (setup/reload), read
+# from the recorder executor thread by the patched closure. Dict reads are
+# atomic under the CPython GIL, so no lock is required.
+_STATS_KEEP_DAYS_KEY = f"{DOMAIN}_stats_keep_days"
+# Attribute tag on our wrapper so we can recognise it on unload/reload and
+# avoid wrapping ourselves twice, or unwrapping someone else's patch.
+_WRAPPER_TAG = f"__{DOMAIN}_wrapped__"
 
 # Voluptuous schema for a single rule loaded from YAML
 _RULE_SCHEMA = vol.Schema(
@@ -185,18 +192,30 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if manager:
         manager.async_unload()
 
-    # Restore the original purge function if we patched it
+    # Restore the original purge function only if our wrapper is still the
+    # one installed. If something else has wrapped on top, leave it in place
+    # — unwrapping would drop their layer on the floor.
     original_fn = domain_data.pop(_ORIG_PURGE_FN_KEY, None)
+    domain_data.pop(_STATS_KEEP_DAYS_KEY, None)
     if original_fn is not None:
         try:
             from homeassistant.components.recorder import purge as recorder_purge  # noqa: PLC0415
-
-            recorder_purge.find_short_term_statistics_to_purge = original_fn
-            _LOGGER.info("recorder_tuning: short-term stats patch removed")
-        except Exception as err:  # noqa: BLE001
+        except ImportError as err:
             _LOGGER.warning(
                 "recorder_tuning: could not restore purge function: %s", err
             )
+        else:
+            current = getattr(
+                recorder_purge, "find_short_term_statistics_to_purge", None
+            )
+            if current is not None and getattr(current, _WRAPPER_TAG, False):
+                recorder_purge.find_short_term_statistics_to_purge = original_fn
+                _LOGGER.info("recorder_tuning: short-term stats patch removed")
+            else:
+                _LOGGER.warning(
+                    "recorder_tuning: find_short_term_statistics_to_purge has "
+                    "been re-wrapped by something else — leaving it alone"
+                )
 
     for service in ("run_purge_now", "add_rule", "remove_rule", "reload"):
         hass.services.async_remove(DOMAIN, service)
@@ -207,57 +226,72 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 def _apply_stats_patch(hass: HomeAssistant, stats_keep_days: int) -> None:
     """Monkey-patch recorder purge to use a longer cutoff for short-term statistics.
 
-    ``stats_keep_days`` is only used in the initial INFO log message.  The
-    replacement closure always reads the value live from the first config entry
-    at the moment each recorder purge runs, so changes to the setting take
-    effect on the very next purge without re-calling this function.
+    Must be called from the event loop (on setup and on config-entry reload).
+    The replacement closure reads the current retention from
+    ``hass.data[DOMAIN][_STATS_KEEP_DAYS_KEY]``, so config changes take effect
+    on the next recorder purge without rewrapping.
     """
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    # Update the cached retention unconditionally — covers both first-apply
+    # and reload paths.
+    domain_data[_STATS_KEEP_DAYS_KEY] = stats_keep_days
+
+    if _ORIG_PURGE_FN_KEY in domain_data:
+        _LOGGER.debug(
+            "recorder_tuning: stats retention updated to %d days", stats_keep_days
+        )
+        return
+
     try:
         from homeassistant.components.recorder import purge as recorder_purge  # noqa: PLC0415
-
-        original_fn = recorder_purge.find_short_term_statistics_to_purge
-
-        # Only patch once; if already patched, update the closure variable instead
-        if _ORIG_PURGE_FN_KEY in hass.data.get(DOMAIN, {}):
-            _LOGGER.debug(
-                "recorder_tuning: stats patch already applied, updating to %d days",
-                stats_keep_days,
-            )
-            # The closure reads stats_keep_days from the config entry at call time
-            return
-
-        hass.data.setdefault(DOMAIN, {})[_ORIG_PURGE_FN_KEY] = original_fn
-
-        def patched_find_short_term_statistics_to_purge(
-            purge_before: datetime, max_bind_vars: int
-        ) -> Any:
-            entries = hass.config_entries.async_entries(DOMAIN)
-            if _ORIG_PURGE_FN_KEY in hass.data.get(DOMAIN, {}) and entries:
-                keep_days = entries[0].data.get(
-                    CONF_STATS_KEEP_DAYS, DEFAULT_STATS_KEEP_DAYS
-                )
-            else:
-                keep_days = DEFAULT_STATS_KEEP_DAYS
-            stats_purge_before = datetime.now(timezone.utc) - timedelta(days=keep_days)
-            # Never purge more aggressively than the recorder wants
-            effective_before = min(purge_before, stats_purge_before)
-            _LOGGER.debug(
-                "recorder_tuning: short-term stats cutoff %s → %s (%d days)",
-                purge_before.isoformat(),
-                effective_before.isoformat(),
-                keep_days,
-            )
-            return original_fn(effective_before, max_bind_vars)
-
-        recorder_purge.find_short_term_statistics_to_purge = (
-            patched_find_short_term_statistics_to_purge
+    except ImportError as err:
+        _LOGGER.error(
+            "recorder_tuning: recorder.purge unavailable, stats patch not applied: %s",
+            err,
         )
-        _LOGGER.info(
-            "recorder_tuning: short-term stats patch applied (%d days)", stats_keep_days
-        )
+        return
 
-    except Exception as err:  # noqa: BLE001
-        _LOGGER.error("recorder_tuning: failed to patch recorder.purge: %s", err)
+    current_fn = getattr(recorder_purge, "find_short_term_statistics_to_purge", None)
+    if current_fn is None:
+        _LOGGER.error(
+            "recorder_tuning: HA has removed find_short_term_statistics_to_purge — "
+            "stats patch not applied. Check tests/test_ha_signature_compat.py."
+        )
+        return
+
+    if getattr(current_fn, _WRAPPER_TAG, False):
+        # Our wrapper is already installed (stale hass.data or re-setup after
+        # a partial teardown). Don't wrap it a second time.
+        _LOGGER.debug(
+            "recorder_tuning: wrapper already present, reusing it (retention %d days)",
+            stats_keep_days,
+        )
+        return
+
+    domain_data[_ORIG_PURGE_FN_KEY] = current_fn
+
+    def patched_find_short_term_statistics_to_purge(
+        purge_before: datetime, max_bind_vars: int
+    ) -> Any:
+        keep_days = domain_data.get(_STATS_KEEP_DAYS_KEY, DEFAULT_STATS_KEEP_DAYS)
+        stats_purge_before = datetime.now(timezone.utc) - timedelta(days=keep_days)
+        # Never purge more aggressively than the recorder wants
+        effective_before = min(purge_before, stats_purge_before)
+        _LOGGER.debug(
+            "recorder_tuning: short-term stats cutoff %s → %s (%d days)",
+            purge_before.isoformat(),
+            effective_before.isoformat(),
+            keep_days,
+        )
+        return current_fn(effective_before, max_bind_vars)
+
+    patched_find_short_term_statistics_to_purge.__dict__[_WRAPPER_TAG] = True
+    recorder_purge.find_short_term_statistics_to_purge = (
+        patched_find_short_term_statistics_to_purge
+    )
+    _LOGGER.info(
+        "recorder_tuning: short-term stats patch applied (%d days)", stats_keep_days
+    )
 
 
 class RecorderTuningManager:
@@ -632,14 +666,11 @@ class RecorderTuningManager:
         await self.store.async_save({CONF_RULES: self.rules})
 
     async def async_reload(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
-        """Handle config entry updates (schedule change, stats_keep_days change).
-
-        Only the purge schedule needs explicit rescheduling here.  The stats
-        patch closure reads ``CONF_STATS_KEEP_DAYS`` directly from the config
-        entry at every call, so stats retention changes take effect on the very
-        next recorder purge without re-patching.
-        """
+        """Handle config entry updates (schedule change, stats_keep_days change)."""
         self._schedule_purge()
+        _apply_stats_patch(
+            hass, entry.data.get(CONF_STATS_KEEP_DAYS, DEFAULT_STATS_KEEP_DAYS)
+        )
         _LOGGER.info("recorder_tuning: reloaded with updated config")
 
     def async_unload(self) -> None:

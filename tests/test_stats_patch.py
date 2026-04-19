@@ -149,3 +149,123 @@ def test_patch_not_applied_twice():
     assert call_count[0] == 1
 
     del sys.modules["homeassistant.components.recorder.purge"]
+
+
+# ---------------------------------------------------------------------------
+# The following tests use pytest's ``monkeypatch`` to replace the attribute on
+# the real ``homeassistant.components.recorder.purge`` module. This is more
+# robust than the ``sys.modules`` replacement used by the legacy tests above,
+# because CPython's import machinery resolves ``from pkg import sub`` via the
+# parent package's attribute — setting ``sys.modules[...]`` alone doesn't win
+# once the submodule has been imported once. ``monkeypatch`` restores the
+# original attribute at teardown, preventing test order leakage.
+# ---------------------------------------------------------------------------
+
+
+def test_wrapper_is_tagged(monkeypatch):
+    """Our installed wrapper carries the _WRAPPER_TAG attribute."""
+    from homeassistant.components.recorder import purge as recorder_purge
+
+    from custom_components.recorder_tuning import _WRAPPER_TAG, _apply_stats_patch
+
+    def vanilla(purge_before, max_bind_vars):
+        return None
+
+    monkeypatch.setattr(recorder_purge, "find_short_term_statistics_to_purge", vanilla)
+
+    hass = _make_hass(30)
+    _apply_stats_patch(hass, 30)
+
+    wrapper = recorder_purge.find_short_term_statistics_to_purge
+    assert getattr(wrapper, _WRAPPER_TAG, False) is True
+    assert wrapper is not vanilla
+
+
+def test_patch_skips_when_wrapper_already_installed(monkeypatch):
+    """If the target already carries our tag, don't re-wrap it."""
+    from homeassistant.components.recorder import purge as recorder_purge
+
+    from custom_components.recorder_tuning import (
+        _ORIG_PURGE_FN_KEY,
+        _WRAPPER_TAG,
+        _apply_stats_patch,
+    )
+    from custom_components.recorder_tuning.const import DOMAIN
+
+    def already_tagged(purge_before, max_bind_vars):
+        return None
+
+    already_tagged.__dict__[_WRAPPER_TAG] = True
+    monkeypatch.setattr(
+        recorder_purge, "find_short_term_statistics_to_purge", already_tagged
+    )
+
+    hass = _make_hass(30)
+    # hass.data has no _ORIG_PURGE_FN_KEY, but the target is already tagged —
+    # must be detected and left alone.
+    _apply_stats_patch(hass, 30)
+
+    assert recorder_purge.find_short_term_statistics_to_purge is already_tagged
+    assert _ORIG_PURGE_FN_KEY not in hass.data.get(DOMAIN, {})
+
+
+# ---------------------------------------------------------------------------
+# Retention updates propagate to the live closure
+# ---------------------------------------------------------------------------
+
+
+def test_reapply_updates_effective_cutoff(monkeypatch):
+    """Re-applying with a different retention shifts the closure's cutoff."""
+    from homeassistant.components.recorder import purge as recorder_purge
+
+    from custom_components.recorder_tuning import _apply_stats_patch
+
+    calls: list[datetime] = []
+
+    def fake_original(purge_before, max_bind_vars):
+        calls.append(purge_before)
+
+    monkeypatch.setattr(
+        recorder_purge, "find_short_term_statistics_to_purge", fake_original
+    )
+
+    hass = _make_hass(30)
+    _apply_stats_patch(hass, 30)
+    wrapper = recorder_purge.find_short_term_statistics_to_purge
+
+    # Recorder cutoff is very recent, so our stats cutoff dominates.
+    recorder_cutoff = datetime.now(timezone.utc) - timedelta(days=1)
+    wrapper(recorder_cutoff, 100)
+    first_effective = calls[-1]
+
+    # Simulate reload with a longer retention.
+    _apply_stats_patch(hass, 60)
+    wrapper(recorder_cutoff, 100)
+    second_effective = calls[-1]
+
+    # Longer retention → effective cutoff moves further into the past.
+    assert second_effective < first_effective
+
+
+# ---------------------------------------------------------------------------
+# Graceful handling when HA has moved the function
+# ---------------------------------------------------------------------------
+
+
+def test_patch_noop_when_target_function_missing(monkeypatch):
+    """If the target attribute is gone, log and return without raising."""
+    from homeassistant.components.recorder import purge as recorder_purge
+
+    from custom_components.recorder_tuning import (
+        _ORIG_PURGE_FN_KEY,
+        _apply_stats_patch,
+    )
+    from custom_components.recorder_tuning.const import DOMAIN
+
+    monkeypatch.delattr(recorder_purge, "find_short_term_statistics_to_purge")
+
+    hass = _make_hass(30)
+    _apply_stats_patch(hass, 30)  # must not raise
+
+    assert not hasattr(recorder_purge, "find_short_term_statistics_to_purge")
+    assert _ORIG_PURGE_FN_KEY not in hass.data.get(DOMAIN, {})
