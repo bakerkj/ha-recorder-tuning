@@ -363,7 +363,9 @@ def _apply_stats_patch(hass: HomeAssistant, stats_keep_days: int) -> None:
         stats_purge_before = datetime.now(timezone.utc) - timedelta(days=keep_days)
         # Never purge more aggressively than the recorder wants
         effective_before = min(purge_before, stats_purge_before)
-        _LOGGER.debug(
+        # WARNING level so it's visible in the default HA log without any
+        # logger config — proves the monkey-patch is firing on each purge.
+        _LOGGER.warning(
             "recorder_tuning: short-term stats cutoff %s → %s (%d days)",
             purge_before.isoformat(),
             effective_before.isoformat(),
