@@ -177,15 +177,39 @@ call) — nothing is partially applied.
 
 ### `recorder_tuning.run_purge_now`
 
-Immediately run all enabled purge rules. Useful for testing before waiting for
-the overnight run.
+Immediately run enabled per-entity purge rules. Useful for testing before
+waiting for the overnight run.
 
-| Parameter | Type | Default             | Description                                                                   |
-| --------- | ---- | ------------------- | ----------------------------------------------------------------------------- |
-| `dry_run` | bool | _(inherits config)_ | Override dry-run mode for this call only. Omit to use the configured setting. |
+Unlike the scheduled nightly run, the trailing global `recorder.purge` is
+**skipped by default** on a manual invocation — the common use case is testing
+rules, and the global sweep is slow enough to be surprising by hand. Pass
+`run_recorder_purge: true` to opt into the full nightly flow.
+
+| Parameter            | Type        | Default             | Description                                                                                                                                                                                             |
+| -------------------- | ----------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dry_run`            | bool        | _(inherits config)_ | Override dry-run mode for this call only. Omit to use the configured setting.                                                                                                                           |
+| `rule_names`         | list of str | _(all rules)_       | Restrict the run to rules whose `name:` matches. Unknown names log a warning but don't abort. When provided, the trailing global `recorder.purge` is always skipped regardless of `run_recorder_purge`. |
+| `run_recorder_purge` | bool        | `false`             | Opt into the trailing global `recorder.purge` call after the rules run — matches the nightly flow. Ignored when `rule_names` is provided.                                                               |
 
 ```yaml
-# Force a live purge even while dry-run mode is ON in config
+# Dry-run just one rule to verify its match set + log output
+service: recorder_tuning.run_purge_now
+data:
+  dry_run: true
+  rule_names:
+    - "Frigate camera metrics"
+```
+
+```yaml
+# Fire the full nightly flow on demand (rules + global recorder.purge)
+service: recorder_tuning.run_purge_now
+data:
+  run_recorder_purge: true
+```
+
+```yaml
+# Force a live purge of rules (global recorder.purge still skipped) even while
+# dry-run mode is ON in config
 service: recorder_tuning.run_purge_now
 data:
   dry_run: false
