@@ -518,8 +518,13 @@ class RecorderTuningManager:
         rule: dict,
         ent_reg: er.EntityRegistry,
     ) -> list[str]:
-        """Build a deduplicated list of entity_ids matching the rule."""
-        # Start with the universe of all registered entities
+        """Build a deduplicated list of entity_ids matching the rule.
+
+        Disabled entities are included in every selector path. A disabled
+        entity does not record new states, but it may still have recorded
+        history from before it was disabled — and that history is exactly
+        what purge rules need to reach.
+        """
         all_entries: list[er.RegistryEntry] = list(ent_reg.entities.values())
 
         # --- Positive selectors: build candidate set ---
@@ -535,10 +540,11 @@ class RecorderTuningManager:
                 if entry.platform == integration:
                     candidates.add(entry.entity_id)
 
-        # Device IDs → all non-disabled entities under that device
+        # Device IDs → all entities under that device, including disabled
+        # ones (they may have pre-disable recorder history to purge).
         for device_id in rule.get(CONF_DEVICE_IDS, []):
             for entry in er.async_entries_for_device(
-                ent_reg, device_id, include_disabled_entities=False
+                ent_reg, device_id, include_disabled_entities=True
             ):
                 candidates.add(entry.entity_id)
 
