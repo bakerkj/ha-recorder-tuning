@@ -75,9 +75,9 @@ _WRAPPER_TAG = f"__{DOMAIN}_wrapped__"
 # per-entity row-count query used in dry-run / pre-purge logging. Kept well
 # under SQLite's default max-variables limit (999).
 _PURGE_BATCH_SIZE = 100
-# Maximum number of per-entity log lines emitted at INFO in dry-run mode.
-# Extra entities are summarised as "…and N more" to keep the log readable on
-# large installations. The full list is always available at DEBUG.
+# Cap on the minority-list length in the dry-run summary logged on setup /
+# reload (_log_dry_run_summary). Beyond this the list is truncated with
+# "…and N more" so the startup log stays readable on large installs.
 _DRY_RUN_LOG_CAP = 25
 
 
@@ -843,10 +843,10 @@ class RecorderTuningManager:
         Called before every purge, regardless of dry-run mode. The log prefix
         is ``[DRY RUN]`` or ``[PURGE]`` so lines are easy to grep.
 
-        In dry-run mode the per-entity row details are logged at INFO so they
-        are visible by default. In live mode they are logged at DEBUG to avoid
-        flooding the log on large instances — the INFO summary line (total rows
-        across all matched entities) is always emitted in both modes.
+        Every matched entity is emitted at INFO — no cap, no DEBUG fallback.
+        The user wants full visibility of what the purge touches in the
+        default HA log. Operators on very large installs can raise the
+        ``recorder_tuning`` logger to WARNING if the noise is a problem.
 
         Note on accuracy: the query and the subsequent ``purge_entities`` call
         are not in a single transaction, so new rows can land between them.
@@ -894,21 +894,9 @@ class RecorderTuningManager:
             cutoff.strftime("%Y-%m-%d %H:%M UTC"),
             total_rows,
         )
-        # In dry-run mode each per-entity line is emitted at INFO. Cap the
-        # visible lines so the log stays readable on large installations;
-        # the full list is still available at DEBUG.
-        sorted_results = sorted(results.items())
-        if dry_run and len(sorted_results) > _DRY_RUN_LOG_CAP:
-            visible = sorted_results[:_DRY_RUN_LOG_CAP]
-            hidden = sorted_results[_DRY_RUN_LOG_CAP:]
-        else:
-            visible = sorted_results
-            hidden = []
-
-        log_entity = _LOGGER.info if dry_run else _LOGGER.debug
-        for entity_id, (cnt, oldest_ts) in visible:
+        for entity_id, (cnt, oldest_ts) in sorted(results.items()):
             oldest = datetime.fromtimestamp(oldest_ts, tz=timezone.utc)
-            log_entity(
+            _LOGGER.info(
                 "recorder_tuning: %s   %-60s  %6d rows  %s → %s",
                 prefix,
                 entity_id,
@@ -916,24 +904,6 @@ class RecorderTuningManager:
                 oldest.strftime("%Y-%m-%d %H:%M UTC"),
                 cutoff.strftime("%Y-%m-%d %H:%M UTC"),
             )
-        if hidden:
-            hidden_rows = sum(cnt for _, (cnt, _) in hidden)
-            _LOGGER.info(
-                "recorder_tuning: %s   …and %d more entities (%d rows) — see DEBUG log",
-                prefix,
-                len(hidden),
-                hidden_rows,
-            )
-            for entity_id, (cnt, oldest_ts) in hidden:
-                oldest = datetime.fromtimestamp(oldest_ts, tz=timezone.utc)
-                _LOGGER.debug(
-                    "recorder_tuning: %s   %-60s  %6d rows  %s → %s",
-                    prefix,
-                    entity_id,
-                    cnt,
-                    oldest.strftime("%Y-%m-%d %H:%M UTC"),
-                    cutoff.strftime("%Y-%m-%d %H:%M UTC"),
-                )
 
     def _resolve_entities(
         self,
