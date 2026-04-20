@@ -51,9 +51,7 @@ def _make_manager(hass=None, entries=()):
 
     mock_hass = hass or MagicMock()
     mock_entry = MagicMock()
-    mock_store = MagicMock()
-    manager = RecorderTuningManager(mock_hass, mock_entry, mock_store, {"rules": []})
-    return manager
+    return RecorderTuningManager(mock_hass, mock_entry, [])
 
 
 # ---------------------------------------------------------------------------

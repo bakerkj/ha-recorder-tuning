@@ -17,7 +17,6 @@ import yaml
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers import storage
 from homeassistant.helpers.event import async_track_time_change
 
 from .const import (
@@ -39,8 +38,6 @@ from .const import (
     DEFAULT_PURGE_TIME,
     DEFAULT_STATS_KEEP_DAYS,
     DOMAIN,
-    STORAGE_KEY,
-    STORAGE_VERSION,
     YAML_CONFIG_FILE,
 )
 
@@ -83,9 +80,9 @@ _RULE_SCHEMA = vol.Schema(
 def _load_yaml_rules(hass: HomeAssistant) -> list[dict] | None:
     """Load and validate rules from recorder_tuning.yaml if it exists.
 
-    Returns the validated rule list, or None if the file does not exist.
-    On parse/validation errors, logs a warning and returns None so the
-    caller can fall back to stored rules.
+    Returns the validated rule list, or ``None`` if the file is missing
+    or unreadable / malformed. The caller treats ``None`` as "no rules
+    configured" — the integration is YAML-only.
     """
     yaml_path = hass.config.path(YAML_CONFIG_FILE)
     if not os.path.isfile(yaml_path):
@@ -130,18 +127,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     stats_keep_days = entry.data.get(CONF_STATS_KEEP_DAYS, DEFAULT_STATS_KEEP_DAYS)
     _apply_stats_patch(hass, stats_keep_days)
 
-    store = storage.Store(hass, STORAGE_VERSION, STORAGE_KEY)
-
-    # YAML file takes precedence over stored rules when present
     yaml_rules = await hass.async_add_executor_job(_load_yaml_rules, hass)
-    if yaml_rules is not None:
-        rules_data = {CONF_RULES: yaml_rules}
-    else:
-        rules_data = await store.async_load() or {CONF_RULES: []}
+    if yaml_rules is None:
+        _LOGGER.info(
+            "recorder_tuning: no %s in config dir — no purge rules active. "
+            "Create the file and call recorder_tuning.reload to enable.",
+            YAML_CONFIG_FILE,
+        )
+        yaml_rules = []
 
-    manager = RecorderTuningManager(
-        hass, entry, store, rules_data, yaml_active=yaml_rules is not None
-    )
+    manager = RecorderTuningManager(hass, entry, yaml_rules)
     hass.data[DOMAIN][entry.entry_id] = manager
 
     await manager.async_setup()
@@ -151,18 +146,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "run_purge_now",
         manager.async_run_purge_now,
         schema=vol.Schema({vol.Optional(CONF_DRY_RUN): bool}),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        "add_rule",
-        manager.async_service_add_rule,
-        schema=_RULE_SCHEMA,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        "remove_rule",
-        manager.async_service_remove_rule,
-        schema=vol.Schema({vol.Required(CONF_RULE_NAME): str}),
     )
     hass.services.async_register(
         DOMAIN,
@@ -208,7 +191,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "been re-wrapped by something else — leaving it alone"
                 )
 
-    for service in ("run_purge_now", "add_rule", "remove_rule", "reload"):
+    for service in ("run_purge_now", "reload"):
         hass.services.async_remove(DOMAIN, service)
 
     return True
@@ -292,15 +275,11 @@ class RecorderTuningManager:
         self,
         hass: HomeAssistant,
         entry: ConfigEntry,
-        store: storage.Store,
-        rules_data: dict,
-        yaml_active: bool = False,
+        rules: list[dict],
     ) -> None:
         self.hass = hass
         self.entry = entry
-        self.store = store
-        self.rules: list[dict] = rules_data.get(CONF_RULES, [])
-        self.yaml_active = yaml_active
+        self.rules: list[dict] = rules
         self._unsub_timer: Any = None
 
     async def async_setup(self) -> None:
@@ -627,83 +606,21 @@ class RecorderTuningManager:
         return sorted(resolved)
 
     async def async_service_reload(self, call: ServiceCall) -> None:
-        """Service handler: reload rules from YAML file (or fall back to stored rules)."""
+        """Service handler: reload rules from the YAML file."""
         yaml_rules = await self.hass.async_add_executor_job(_load_yaml_rules, self.hass)
-        if yaml_rules is not None:
+        if yaml_rules is None:
+            self.rules = []
+            _LOGGER.info(
+                "recorder_tuning: %s missing or invalid — 0 rules active",
+                YAML_CONFIG_FILE,
+            )
+        else:
             self.rules = yaml_rules
-            self.yaml_active = True
             _LOGGER.info(
                 "recorder_tuning: reloaded %d rule(s) from %s",
                 len(self.rules),
                 YAML_CONFIG_FILE,
             )
-        else:
-            # No YAML file — fall back to stored rules
-            self.yaml_active = False
-            stored = await self.store.async_load() or {CONF_RULES: []}
-            self.rules = stored.get(CONF_RULES, [])
-            _LOGGER.info(
-                "recorder_tuning: YAML file gone, reverted to %d stored rule(s)",
-                len(self.rules),
-            )
-
-    async def async_service_add_rule(self, call: ServiceCall) -> None:
-        """Service handler: add or update a rule."""
-        if self.yaml_active:
-            _LOGGER.warning(
-                "recorder_tuning: add_rule ignored — rules are managed by %s; "
-                "edit the file and call recorder_tuning.reload",
-                YAML_CONFIG_FILE,
-            )
-            return
-        # call.data is already validated and defaulted by _RULE_SCHEMA
-        name = call.data[CONF_RULE_NAME]
-        new_rule = dict(call.data)
-        existing = next(
-            (i for i, r in enumerate(self.rules) if r[CONF_RULE_NAME] == name), None
-        )
-        if existing is not None:
-            self.rules[existing] = new_rule
-            _LOGGER.info("recorder_tuning: updated rule '%s'", name)
-        else:
-            self.rules.append(new_rule)
-            _LOGGER.info("recorder_tuning: added rule '%s'", name)
-        await self._save_rules()
-
-    async def async_service_remove_rule(self, call: ServiceCall) -> None:
-        """Service handler: remove a rule by name."""
-        if self.yaml_active:
-            _LOGGER.warning(
-                "recorder_tuning: remove_rule ignored — rules are managed by %s; "
-                "edit the file and call recorder_tuning.reload",
-                YAML_CONFIG_FILE,
-            )
-            return
-        name = call.data[CONF_RULE_NAME]
-        before = len(self.rules)
-        self.rules = [r for r in self.rules if r[CONF_RULE_NAME] != name]
-        if len(self.rules) < before:
-            _LOGGER.info("recorder_tuning: removed rule '%s'", name)
-        else:
-            _LOGGER.warning(
-                "recorder_tuning: rule '%s' not found, nothing removed", name
-            )
-        await self._save_rules()
-
-    async def _save_rules(self) -> None:
-        """Persist rules to storage."""
-        await self.store.async_save({CONF_RULES: self.rules})
-
-    async def async_replace_rules(self, rules: list[dict]) -> None:
-        """Atomically replace the in-memory rule set and persist it.
-
-        Called by the options flow when the user adds, edits, or removes a
-        rule through the UI. Keeps persistence and in-memory state on the
-        manager side so the options flow never has to poke at ``self.store``
-        or mutate ``self.rules`` directly.
-        """
-        self.rules = list(rules)
-        await self._save_rules()
 
     async def async_reload(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         """Handle config entry updates (schedule change, stats_keep_days change)."""

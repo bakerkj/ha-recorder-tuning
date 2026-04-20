@@ -2,14 +2,15 @@
 # All rights reserved.
 """Integration tests for YAML-based rule configuration.
 
-These tests verify that rules loaded from ``recorder_tuning.yaml`` in the HA
-config directory take effect correctly, override stored rules, survive a reload,
-fall back gracefully on errors, and block add_rule/remove_rule service calls
-while a YAML file is active.
+Rules are loaded exclusively from ``recorder_tuning.yaml`` in the HA config
+directory. These tests verify that rules take effect at setup, survive a
+reload after edits, fail gracefully on missing or malformed files, and
+skip individual rules with schema errors without aborting the rest.
 
-The YAML file is written into the real HA config directory (``hass.config.config_dir``)
-so that ``_load_yaml_rules`` finds it via ``hass.config.path()``.  Each test
-cleans up the file after itself via a fixture.
+The YAML file is written into the real HA config directory
+(``hass.config.config_dir``) so that ``_load_yaml_rules`` finds it via
+``hass.config.path()``.  Each test cleans up the file after itself via a
+fixture.
 """
 
 from __future__ import annotations
@@ -22,16 +23,12 @@ import pytest
 from homeassistant.core import HomeAssistant
 
 from custom_components.recorder_tuning.const import (
-    CONF_ENTITY_IDS,
-    CONF_KEEP_DAYS,
-    CONF_RULE_NAME,
     DOMAIN,
     YAML_CONFIG_FILE,
 )
 
 from .conftest import (
     NOW,
-    configure_rules,
     count_states,
     set_state_at,
     wait_for_recorder,
@@ -60,7 +57,6 @@ def yaml_config(integration_entry: tuple[HomeAssistant, Any]):
 
     yield hass, _write
 
-    # Cleanup — remove the file so it doesn't bleed into other tests
     if os.path.isfile(yaml_path):
         os.remove(yaml_path)
 
@@ -91,54 +87,10 @@ rules:
     keep_days: {KEEP_DAYS}
 """)
 
-    # Trigger reload so the manager picks up the new file
     await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
     await run_purge(hass)
 
     assert count_states(hass, "sensor.yaml_target") == 0
-
-
-async def test_yaml_rules_replace_stored_rules(
-    yaml_config: tuple[HomeAssistant, Any], freezer: Any
-) -> None:
-    """YAML rules replace (not merge with) stored rules."""
-    hass, write_yaml = yaml_config
-
-    await set_state_at(hass, "sensor.stored_only", "1", OLD_TIME, freezer)
-    await set_state_at(hass, "sensor.yaml_only", "2", OLD_TIME, freezer)
-
-    # Store a rule for sensor.stored_only
-    await configure_rules(
-        hass,
-        [
-            {
-                CONF_RULE_NAME: "stored_rule",
-                "entity_globs": [],
-                CONF_ENTITY_IDS: ["sensor.stored_only"],
-                "device_ids": [],
-                "integration_filter": [],
-                "entity_regex_include": [],
-                "entity_regex_exclude": [],
-                CONF_KEEP_DAYS: KEEP_DAYS,
-                "enabled": True,
-            }
-        ],
-    )
-
-    # Write YAML with a different rule
-    write_yaml(f"""
-rules:
-  - name: yaml_rule
-    entity_ids: [sensor.yaml_only]
-    keep_days: {KEEP_DAYS}
-""")
-
-    await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
-    await run_purge(hass)
-
-    # Only the YAML rule is active — stored rule is suppressed
-    assert count_states(hass, "sensor.yaml_only") == 0
-    assert count_states(hass, "sensor.stored_only") > 0
 
 
 async def test_yaml_multiple_rules(
@@ -172,7 +124,7 @@ rules:
 async def test_yaml_glob_selector(
     yaml_config: tuple[HomeAssistant, Any], freezer: Any
 ) -> None:
-    """Glob patterns in YAML rules work the same as via the service API."""
+    """Glob patterns in YAML rules are honoured."""
     hass, write_yaml = yaml_config
 
     await set_state_at(hass, "sensor.yaml_power_a", "10", OLD_TIME, freezer)
@@ -230,7 +182,6 @@ async def test_reload_service_picks_up_file_changes(
     await set_state_at(hass, "sensor.first_target", "1", OLD_TIME, freezer)
     await set_state_at(hass, "sensor.second_target", "2", OLD_TIME, freezer)
 
-    # First version of the file — only targets sensor.first_target
     write_yaml(f"""
 rules:
   - name: rule_v1
@@ -243,10 +194,8 @@ rules:
     assert count_states(hass, "sensor.first_target") == 0
     assert count_states(hass, "sensor.second_target") > 0
 
-    # Now set the second target's state again so it's purgeable
     await set_state_at(hass, "sensor.first_target", "new", OLD_TIME, freezer)
 
-    # Edit the file — now targets sensor.second_target
     write_yaml(f"""
 rules:
   - name: rule_v2
@@ -261,50 +210,29 @@ rules:
     assert count_states(hass, "sensor.first_target") > 0
 
 
-async def test_reload_without_file_reverts_to_stored_rules(
+async def test_reload_without_file_runs_zero_rules(
     yaml_config: tuple[HomeAssistant, Any], freezer: Any
 ) -> None:
-    """Removing the YAML file and calling reload reverts to stored rules."""
+    """Removing the YAML file and reloading deactivates all rules."""
     hass, write_yaml = yaml_config
 
-    await set_state_at(hass, "sensor.stored_target", "1", OLD_TIME, freezer)
-    await set_state_at(hass, "sensor.yaml_target", "2", OLD_TIME, freezer)
+    await set_state_at(hass, "sensor.was_yaml", "1", OLD_TIME, freezer)
 
-    # Stored rule targets sensor.stored_target
-    await configure_rules(
-        hass,
-        [
-            {
-                CONF_RULE_NAME: "stored_rule",
-                "entity_globs": [],
-                CONF_ENTITY_IDS: ["sensor.stored_target"],
-                "device_ids": [],
-                "integration_filter": [],
-                "entity_regex_include": [],
-                "entity_regex_exclude": [],
-                CONF_KEEP_DAYS: KEEP_DAYS,
-                "enabled": True,
-            }
-        ],
-    )
-
-    # Write YAML targeting a different entity
     yaml_path = write_yaml(f"""
 rules:
   - name: yaml_rule
-    entity_ids: [sensor.yaml_target]
+    entity_ids: [sensor.was_yaml]
     keep_days: {KEEP_DAYS}
 """)
     await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
 
-    # Delete the file and reload — should fall back to stored rules
+    # Delete the file and reload — no rules should remain active
     os.remove(yaml_path)
     await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
     await run_purge(hass)
 
-    # Stored rule is back in effect
-    assert count_states(hass, "sensor.stored_target") == 0
-    assert count_states(hass, "sensor.yaml_target") > 0
+    # Nothing purged — no rules were active
+    assert count_states(hass, "sensor.was_yaml") > 0
 
 
 # ---------------------------------------------------------------------------
@@ -312,41 +240,21 @@ rules:
 # ---------------------------------------------------------------------------
 
 
-async def test_invalid_yaml_syntax_falls_back_to_stored_rules(
+async def test_invalid_yaml_syntax_results_in_zero_rules(
     yaml_config: tuple[HomeAssistant, Any], freezer: Any
 ) -> None:
-    """A YAML parse error leaves existing rules unchanged."""
+    """A YAML parse error is logged and leaves zero rules active."""
     hass, write_yaml = yaml_config
 
     await set_state_at(hass, "sensor.safe_entity", "1", OLD_TIME, freezer)
 
-    # Put a good stored rule in place first
-    await configure_rules(
-        hass,
-        [
-            {
-                CONF_RULE_NAME: "safe_rule",
-                "entity_globs": ["sensor.safe_*"],
-                CONF_ENTITY_IDS: [],
-                "device_ids": [],
-                "integration_filter": [],
-                "entity_regex_include": [],
-                "entity_regex_exclude": [],
-                CONF_KEEP_DAYS: KEEP_DAYS,
-                "enabled": True,
-            }
-        ],
-    )
-
-    # Write broken YAML
     write_yaml("rules: [invalid: yaml: {{broken")
 
-    # Reload — should log an error and fall back to stored rules
     await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
     await run_purge(hass)
 
-    # Stored rule still active — sensor was purged
-    assert count_states(hass, "sensor.safe_entity") == 0
+    # No rule was loaded — entity untouched
+    assert count_states(hass, "sensor.safe_entity") > 0
 
 
 async def test_invalid_rule_schema_skips_bad_rule_keeps_good(
@@ -370,7 +278,6 @@ rules:
     await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
     await run_purge(hass)
 
-    # good_rule ran despite bad_rule being skipped
     assert count_states(hass, "sensor.good_target") == 0
 
 
@@ -389,69 +296,8 @@ rules:
     # keep_days intentionally omitted — should fail validation
 """)
 
-    # Should not raise; the rule is simply skipped
     await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
     await run_purge(hass)
 
-    # No rule ran — entity should be untouched
+    # No rule ran — entity untouched
     assert count_states(hass, "sensor.no_keep_days") > 0
-
-
-# ---------------------------------------------------------------------------
-# add_rule / remove_rule blocked when YAML is active
-# ---------------------------------------------------------------------------
-
-
-async def test_add_rule_blocked_when_yaml_active(
-    yaml_config: tuple[HomeAssistant, Any], freezer: Any
-) -> None:
-    """add_rule service call is silently ignored when YAML rules are active."""
-    hass, write_yaml = yaml_config
-
-    await set_state_at(hass, "sensor.service_add_target", "1", OLD_TIME, freezer)
-
-    # YAML file with no rules — nothing will be purged
-    write_yaml("rules: []")
-    await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
-
-    # Try to add a rule via service — should be ignored
-    await hass.services.async_call(
-        DOMAIN,
-        "add_rule",
-        {
-            CONF_RULE_NAME: "blocked_rule",
-            CONF_ENTITY_IDS: ["sensor.service_add_target"],
-            CONF_KEEP_DAYS: KEEP_DAYS,
-        },
-        blocking=True,
-    )
-    await run_purge(hass)
-
-    # Entity must be untouched because the service call was ignored
-    assert count_states(hass, "sensor.service_add_target") > 0
-
-
-async def test_remove_rule_blocked_when_yaml_active(
-    yaml_config: tuple[HomeAssistant, Any], freezer: Any
-) -> None:
-    """remove_rule service call is silently ignored when YAML rules are active."""
-    hass, write_yaml = yaml_config
-
-    await set_state_at(hass, "sensor.yaml_remove_target", "1", OLD_TIME, freezer)
-
-    write_yaml(f"""
-rules:
-  - name: active_yaml_rule
-    entity_ids: [sensor.yaml_remove_target]
-    keep_days: {KEEP_DAYS}
-""")
-    await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
-
-    # Try to remove the rule — should be ignored
-    await hass.services.async_call(
-        DOMAIN, "remove_rule", {CONF_RULE_NAME: "active_yaml_rule"}, blocking=True
-    )
-    await run_purge(hass)
-
-    # Rule is still active — entity was purged
-    assert count_states(hass, "sensor.yaml_remove_target") == 0

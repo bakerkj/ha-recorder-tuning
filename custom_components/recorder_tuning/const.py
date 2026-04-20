@@ -28,11 +28,8 @@ DEFAULT_KEEP_DAYS = 7
 DEFAULT_STATS_KEEP_DAYS = 30
 DEFAULT_DRY_RUN = True
 
-# Storage
-STORAGE_KEY = f"{DOMAIN}.rules"
-STORAGE_VERSION = 1
-
-# YAML config file (optional, lives in HA config dir alongside configuration.yaml)
+# YAML config file — the only source of truth for purge rules. Lives in the
+# HA config dir alongside configuration.yaml.
 YAML_CONFIG_FILE = "recorder_tuning.yaml"
 
 # Dry-run mode

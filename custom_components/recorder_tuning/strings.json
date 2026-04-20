@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Recorder Tuning",
-        "description": "Configure the daily entity purge schedule and short-term statistics retention.\n\nDry-run mode is enabled by default. In dry-run mode the integration logs exactly what it would delete without removing any data. Disable it once you have reviewed the logs and are satisfied with your rules.",
+        "description": "Configure the daily entity purge schedule and short-term statistics retention. Purge rules are defined in recorder_tuning.yaml in the HA config directory.\n\nDry-run mode is enabled by default. In dry-run mode the integration logs exactly what it would delete without removing any data. Disable it once you have reviewed the logs and are satisfied with your rules.",
         "data": {
           "purge_time": "Daily purge time (HH:MM, 24h)",
           "stats_keep_days": "Short-term statistics retention (days)",
@@ -27,14 +27,11 @@
     "step": {
       "menu": {
         "title": "Recorder Tuning",
-        "description": "Purge rules:\n{rules}\n\nDry-run mode: {dry_run}\nYAML rules: {yaml_active}",
+        "description": "Rules are defined in recorder_tuning.yaml. Call the recorder_tuning.reload service after editing that file.\n\nDry-run mode: {dry_run}",
         "menu_options": {
           "set_schedule": "Change purge schedule",
           "set_stats_retention": "Change statistics retention",
           "set_dry_run": "Toggle dry-run mode",
-          "add_rule": "Add purge rule",
-          "edit_rule": "Edit purge rule",
-          "remove_rule": "Remove purge rule",
           "done": "Done"
         }
       },
@@ -59,54 +56,10 @@
         "data": {
           "dry_run": "Dry-run mode (log only, do not delete)"
         }
-      },
-      "add_rule": {
-        "title": "Add Purge Rule",
-        "description": "At least one target field (integration, device, entity, glob, or regex) is required.",
-        "data": {
-          "name": "Rule name",
-          "integration_filter": "Integrations (comma-separated, e.g. frigate, esphome)",
-          "device_ids": "Device IDs (comma-separated)",
-          "entity_ids": "Entity IDs (comma-separated)",
-          "entity_globs": "Entity glob patterns (comma-separated, e.g. sensor.frigate_*_fps)",
-          "entity_regex_include": "Regex include patterns (comma-separated)",
-          "entity_regex_exclude": "Regex exclude patterns (comma-separated)",
-          "keep_days": "Keep days",
-          "enabled": "Enabled"
-        }
-      },
-      "edit_rule": {
-        "title": "Select Rule to Edit",
-        "data": {
-          "rule_index": "Rule"
-        }
-      },
-      "edit_rule_detail": {
-        "title": "Edit Purge Rule",
-        "data": {
-          "name": "Rule name",
-          "integration_filter": "Integrations (comma-separated)",
-          "device_ids": "Device IDs (comma-separated)",
-          "entity_ids": "Entity IDs (comma-separated)",
-          "entity_globs": "Entity glob patterns (comma-separated)",
-          "entity_regex_include": "Regex include patterns (comma-separated)",
-          "entity_regex_exclude": "Regex exclude patterns (comma-separated)",
-          "keep_days": "Keep days",
-          "enabled": "Enabled"
-        }
-      },
-      "remove_rule": {
-        "title": "Select Rule to Remove",
-        "data": {
-          "rule_index": "Rule"
-        }
       }
     },
     "error": {
-      "invalid_time": "Time must be in HH:MM format (e.g. 03:00).",
-      "name_required": "Rule name is required.",
-      "no_targets": "At least one target (integration, device, entity, glob, or regex include) is required.",
-      "invalid_regex": "One or more regex patterns are invalid."
+      "invalid_time": "Time must be in HH:MM format (e.g. 03:00)."
     }
   }
 }

@@ -36,8 +36,7 @@ from custom_components.recorder_tuning.const import (
     CONF_PURGE_TIME,
     CONF_STATS_KEEP_DAYS,
     DOMAIN,
-    STORAGE_KEY,
-    STORAGE_VERSION,
+    YAML_CONFIG_FILE,
 )
 
 # ---------------------------------------------------------------------------
@@ -148,14 +147,30 @@ async def wait_for_purge(hass: HomeAssistant) -> None:
 
 
 async def configure_rules(hass: HomeAssistant, rules: list[dict]) -> None:
-    """Write rules to the storage store and push them to the live manager."""
-    from homeassistant.helpers import storage  # noqa: PLC0415
+    """Write ``rules`` to recorder_tuning.yaml and trigger a reload.
 
-    store = storage.Store(hass, STORAGE_VERSION, STORAGE_KEY)
-    await store.async_save({"rules": rules})
-    for obj in hass.data.get(DOMAIN, {}).values():
-        if hasattr(obj, "rules"):
-            obj.rules = list(rules)
+    Rules are now sourced exclusively from the YAML file. Tests that want to
+    install a rule set write it to the HA config dir and call the reload
+    service so the live manager picks it up without restarting HA.
+    """
+    import os  # noqa: PLC0415
+
+    import yaml  # noqa: PLC0415
+
+    path = hass.config.path(YAML_CONFIG_FILE)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        yaml.safe_dump({"rules": rules}, fh, sort_keys=False)
+
+    if hass.services.has_service(DOMAIN, "reload"):
+        await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
+    else:
+        # Integration hasn't registered its services yet — e.g. during setup
+        # before the entry is live. Fall back to direct assignment so tests
+        # that seed rules at setup still work.
+        for obj in hass.data.get(DOMAIN, {}).values():
+            if hasattr(obj, "rules"):
+                obj.rules = list(rules)
 
 
 def set_dry_run(hass: HomeAssistant, enabled: bool) -> None:

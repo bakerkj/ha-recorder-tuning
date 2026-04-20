@@ -41,7 +41,9 @@ directory and restart Home Assistant.
    recorder's `purge_keep_days`; default 30).
 4. Leave **dry-run mode** enabled (the default) until you have reviewed the logs
    and confirmed your rules are correct.
-5. Click **Configure** on the integration card to add entity purge rules.
+5. Create `recorder_tuning.yaml` in your HA config directory to define purge
+   rules — see [YAML Configuration](#yaml-configuration) below. Call the
+   `recorder_tuning.reload` service after editing the file.
 
 Also configure `recorder` in `configuration.yaml`:
 
@@ -79,9 +81,10 @@ To disable dry-run and start live purging:
 
 ## YAML Configuration
 
-Rules can be managed in bulk by placing a `recorder_tuning.yaml` file in your HA
-config directory alongside `configuration.yaml`. When the file is present it
-takes full precedence over any rules stored via the UI.
+Purge rules are defined exclusively in `recorder_tuning.yaml` in your HA config
+directory (alongside `configuration.yaml`). If the file is missing or invalid
+the integration runs with zero rules active; state and stats retention still
+apply.
 
 ```yaml
 # recorder_tuning.yaml
@@ -106,56 +109,34 @@ rules:
 ```
 
 After editing the file, call `recorder_tuning.reload` to hot-swap the rules
-without restarting Home Assistant. Removing the file and reloading reverts to
-rules stored via the UI.
-
-While YAML rules are active, `add_rule` and `remove_rule` service calls are
-blocked with a warning — edit the file and reload instead.
-
-## Configuring Purge Rules
-
-Each rule targets a set of entities and assigns a `keep_days` value. Open
-**Configure** on the integration card and choose **Add purge rule**.
+without restarting Home Assistant.
 
 ### Rule matching
 
 All enabled rules are applied on every purge run. If an entity matches more than
 one rule, **every matching rule runs** and the most aggressive `keep_days`
-(lowest value) determines how much history is kept. Place more specific rules
-with narrower `keep_days` before broad integration-wide rules only for
-readability — order does not affect the result.
+(lowest value) determines how much history is kept. Rule order does not affect
+the result.
 
-### Target selectors
+### Rule fields
 
-| Field                    | Description                                                                                                                                       |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Integrations**         | Comma-separated integration names, e.g. `frigate, esphome`. All entities belonging to those integrations are included.                            |
-| **Device IDs**           | Comma-separated device IDs. All non-disabled entities under each device are included. Find IDs in Settings → Devices & Services → (device) → URL. |
-| **Entity IDs**           | Comma-separated explicit entity IDs.                                                                                                              |
-| **Entity glob patterns** | Comma-separated glob patterns matched against all registered entity IDs, e.g. `sensor.frigate_*_fps`.                                             |
-| **Regex include**        | Comma-separated regular expressions. Entities matching any pattern are added to the candidate set.                                                |
-| **Regex exclude**        | Comma-separated regular expressions. Entities matching any pattern are removed from the candidate set, even if another selector matched them.     |
+| Field                  | Type            | Required  | Description                                                                                                                       |
+| ---------------------- | --------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `name`                 | string          | yes       | Identifier for the rule (free-form).                                                                                              |
+| `keep_days`            | int, 1-365      | yes       | Days of recorder history to retain for matched entities.                                                                          |
+| `enabled`              | bool            | no (true) | Set to `false` to suspend a rule without deleting it.                                                                             |
+| `integration_filter`   | list of strings | no        | Integration/platform names, e.g. `[frigate, esphome]`. All entities from those integrations are included.                         |
+| `device_ids`           | list of strings | no        | Device IDs. All entities under each device (including disabled ones) are included. Find IDs at Settings → Devices → (device) URL. |
+| `entity_ids`           | list of strings | no        | Explicit entity IDs.                                                                                                              |
+| `entity_globs`         | list of strings | no        | Glob patterns matched against all registered entity IDs, e.g. `sensor.frigate_*_fps`.                                             |
+| `entity_regex_include` | list of regexes | no        | Entities matching any pattern are added to the candidate set.                                                                     |
+| `entity_regex_exclude` | list of regexes | no        | Entities matching any pattern are removed from the candidate set after positive selectors have run.                               |
 
-At least one positive selector (integration, device, entity ID, glob, or regex
-include) is required per rule.
-
-Regex exclude is applied **after** all positive selectors, acting as a final
-filter:
-
-```
-integration_filter: esphome
-entity_regex_exclude: _debug$, _raw$
-```
-
-### Example rules
-
-| Rule Name              | Target                                                          | Keep Days |
-| ---------------------- | --------------------------------------------------------------- | --------- |
-| Frigate high-frequency | `entity_globs: sensor.frigate_*_fps, sensor.frigate_*_skipped`  | 3         |
-| GPU / system stats     | `entity_globs: sensor.gpu_*, sensor.cpu_*`                      | 7         |
-| Energy sensors         | `entity_globs: sensor.*_energy, sensor.*_power`                 | 15        |
-| All ESPHome (no debug) | `integration_filter: esphome` + `entity_regex_exclude: _debug$` | 14        |
-| Specific camera        | `device_ids: <device_id>`                                       | 5         |
+At least one positive selector (`integration_filter`, `device_ids`,
+`entity_ids`, `entity_globs`, or `entity_regex_include`) is required per rule.
+Invalid rules (missing `name`, missing `keep_days`, out-of-range `keep_days`,
+bad regex, etc.) are skipped individually — other valid rules in the same file
+still run.
 
 ## Services
 
@@ -178,37 +159,11 @@ data:
 ### `recorder_tuning.reload`
 
 Reload rules from `recorder_tuning.yaml` in the HA config directory without
-restarting Home Assistant. If the file does not exist, reverts to rules stored
-via the UI.
+restarting Home Assistant. If the file is missing or invalid the integration
+runs with zero rules.
 
 ```yaml
 service: recorder_tuning.reload
-```
-
-### `recorder_tuning.add_rule`
-
-Add or update a rule from an automation or script. Blocked when YAML rules are
-active.
-
-```yaml
-service: recorder_tuning.add_rule
-data:
-  name: "Frigate high-frequency"
-  entity_globs:
-    - sensor.frigate_*_fps
-    - sensor.frigate_*_skipped
-  keep_days: 3
-  enabled: true
-```
-
-### `recorder_tuning.remove_rule`
-
-Remove a rule by name. Blocked when YAML rules are active.
-
-```yaml
-service: recorder_tuning.remove_rule
-data:
-  name: "Frigate high-frequency"
 ```
 
 ## How It Works
@@ -225,8 +180,6 @@ data:
 5. Unless dry-run mode is active, the resolved entity list is passed to HA's
    built-in `recorder.purge_entities` service with the rule's `keep_days`. Calls
    are batched in groups of 100.
-6. Rules persist across restarts via HA's built-in storage API
-   (`/.storage/recorder_tuning.rules`).
 
 ### Short-term statistics retention
 
@@ -251,5 +204,3 @@ aggressively than the recorder would by default.
   configuration.
 - Removing the integration restores the original short-term statistics purge
   behavior on the next HA restart.
-- When `recorder_tuning.yaml` is present, the UI rule list is read-only — edit
-  the file and call `recorder_tuning.reload`.
