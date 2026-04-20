@@ -78,6 +78,10 @@ To disable dry-run and start live purging:
   mode
 - **Service**: call `recorder_tuning.run_purge_now` with `dry_run: false` for a
   one-off live purge while leaving the persistent setting unchanged.
+- **Per-rule**: add `dry_run: true` (or `false`) to an individual rule in
+  `recorder_tuning.yaml` to force its mode regardless of the integration-wide
+  setting. Useful when iterating on a newly-added rule while leaving the rest of
+  the rule set live.
 
 ## YAML Configuration
 
@@ -146,6 +150,7 @@ subtracts from the final set, regardless of `match_mode`.
 | `name`                 | string          | yes        | Identifier for the rule (free-form).                                                                                              |
 | `keep_days`            | int, 1-365      | yes        | Days of recorder history to retain for matched entities.                                                                          |
 | `enabled`              | bool            | no (true)  | Set to `false` to suspend a rule without deleting it.                                                                             |
+| `dry_run`              | bool            | no         | Per-rule override. If set, forces this rule into dry-run (`true`) or live (`false`) regardless of the integration-wide setting.   |
 | `match_mode`           | `all` \| `any`  | no (`all`) | How positive selectors combine within the rule. `all` = intersection; `any` = union.                                              |
 | `integration_filter`   | list of strings | no         | Integration/platform names, e.g. `[frigate, esphome]`.                                                                            |
 | `device_ids`           | list of strings | no         | Device IDs. All entities under each device (including disabled ones) are included. Find IDs at Settings → Devices → (device) URL. |

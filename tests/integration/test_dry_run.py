@@ -477,3 +477,100 @@ async def test_config_dry_run_off_allows_delete(
     await wait_for_recorder(hass)
 
     assert count_states(hass, "sensor.live_target") == 0
+
+
+# ---------------------------------------------------------------------------
+# Per-rule dry_run override
+# ---------------------------------------------------------------------------
+
+
+async def test_per_rule_dry_run_true_prevents_delete_when_run_live(
+    integration_entry: tuple[HomeAssistant, Any], freezer: Any
+) -> None:
+    """A rule with dry_run=true must stay dry even when the run is live."""
+    hass, _ = integration_entry
+
+    await set_state_at(hass, "sensor.rule_dry", "1", OLD_TIME, freezer)
+
+    await configure_rules(
+        hass,
+        [
+            {
+                CONF_RULE_NAME: "rule_dry",
+                CONF_ENTITY_IDS: ["sensor.rule_dry"],
+                CONF_KEEP_DAYS: KEEP_DAYS,
+                CONF_DRY_RUN: True,
+            }
+        ],
+    )
+
+    set_dry_run(hass, False)
+
+    await run_purge(hass)
+
+    # Rule override forced dry-run — entity must be intact
+    assert count_states(hass, "sensor.rule_dry") > 0
+
+
+async def test_per_rule_dry_run_false_forces_delete_when_run_dry(
+    integration_entry: tuple[HomeAssistant, Any], freezer: Any
+) -> None:
+    """A rule with dry_run=false must delete even when the run is dry."""
+    hass, _ = integration_entry
+
+    await set_state_at(hass, "sensor.rule_live", "1", OLD_TIME, freezer)
+
+    await configure_rules(
+        hass,
+        [
+            {
+                CONF_RULE_NAME: "rule_live",
+                CONF_ENTITY_IDS: ["sensor.rule_live"],
+                CONF_KEEP_DAYS: KEEP_DAYS,
+                CONF_DRY_RUN: False,
+            }
+        ],
+    )
+
+    set_dry_run(hass, True)
+
+    # Service call with no dry_run arg — inherits True from config, but the
+    # per-rule override should flip this rule back to live.
+    await hass.services.async_call(DOMAIN, "run_purge_now", {}, blocking=True)
+    await wait_for_recorder(hass)
+
+    assert count_states(hass, "sensor.rule_live") == 0
+
+
+async def test_per_rule_override_mixed_in_same_run(
+    integration_entry: tuple[HomeAssistant, Any], freezer: Any
+) -> None:
+    """Two rules in one run — one live, one overridden to dry — behave independently."""
+    hass, _ = integration_entry
+
+    await set_state_at(hass, "sensor.mixed_live", "1", OLD_TIME, freezer)
+    await set_state_at(hass, "sensor.mixed_dry", "1", OLD_TIME, freezer)
+
+    await configure_rules(
+        hass,
+        [
+            {
+                CONF_RULE_NAME: "mixed_live_rule",
+                CONF_ENTITY_IDS: ["sensor.mixed_live"],
+                CONF_KEEP_DAYS: KEEP_DAYS,
+            },
+            {
+                CONF_RULE_NAME: "mixed_dry_rule",
+                CONF_ENTITY_IDS: ["sensor.mixed_dry"],
+                CONF_KEEP_DAYS: KEEP_DAYS,
+                CONF_DRY_RUN: True,
+            },
+        ],
+    )
+
+    set_dry_run(hass, False)
+
+    await run_purge(hass)
+
+    assert count_states(hass, "sensor.mixed_live") == 0
+    assert count_states(hass, "sensor.mixed_dry") > 0
