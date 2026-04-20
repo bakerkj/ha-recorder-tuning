@@ -397,6 +397,15 @@ class RecorderTuningManager:
         self.entry = entry
         self.rules: list[dict] = rules
         self._unsub_timer: Any = None
+        # HH:MM string the timer is currently scheduled for. Lets us skip the
+        # cancel/reinstall cycle when an options change doesn't touch the
+        # schedule — important when the change lands right before a firing.
+        self._scheduled_at: str | None = None
+        # Names of rules that warned about matching zero entities since the
+        # last reload. Further zero-match runs for the same rule log at DEBUG
+        # to avoid spamming the log every purge; the set is cleared on reload
+        # and also when a rule recovers (matches ≥1 entity on a later run).
+        self._warned_empty_rules: set[str] = set()
 
     async def async_setup(self) -> None:
         """Schedule the daily purge."""
@@ -408,12 +417,22 @@ class RecorderTuningManager:
         )
 
     def _schedule_purge(self) -> None:
-        """Set up a daily time-based trigger."""
-        if self._unsub_timer:
+        """Install (or update) the daily time-based trigger.
+
+        If the scheduled HH:MM hasn't changed, do nothing — an options change
+        that touches only dry_run or stats_keep_days must not cancel a pending
+        firing. That matters when an update lands within a minute of the
+        scheduled time: cancelling the timer would lose the day's purge.
+        """
+        purge_time_str = self.entry.data.get(CONF_PURGE_TIME, DEFAULT_PURGE_TIME)
+
+        if self._unsub_timer is not None and self._scheduled_at == purge_time_str:
+            return
+
+        if self._unsub_timer is not None:
             self._unsub_timer()
             self._unsub_timer = None
 
-        purge_time_str = self.entry.data.get(CONF_PURGE_TIME, DEFAULT_PURGE_TIME)
         try:
             purge_time = _parse_hhmm(purge_time_str)
         except (TypeError, ValueError):
@@ -431,6 +450,7 @@ class RecorderTuningManager:
             minute=purge_time.minute,
             second=0,
         )
+        self._scheduled_at = purge_time_str
 
     async def _async_run_purge(self, now: datetime) -> None:
         """Run all enabled purge rules."""
@@ -478,20 +498,37 @@ class RecorderTuningManager:
                 )
                 continue
 
+            rule_name = rule[CONF_RULE_NAME]
             entity_ids = self._resolve_entities(rule, ent_reg)
 
             if not entity_ids:
-                _LOGGER.warning(
-                    "recorder_tuning: rule '%s' matched no entities, skipping",
-                    rule[CONF_RULE_NAME],
-                )
+                # Warn the first time a rule matches nothing (e.g., the user's
+                # integration hasn't loaded yet at HA startup, or a selector
+                # is misconfigured). Suppress subsequent zero-match runs until
+                # reload — or until the rule recovers — so we don't spam.
+                if rule_name not in self._warned_empty_rules:
+                    _LOGGER.warning(
+                        "recorder_tuning: rule '%s' matched no entities, skipping "
+                        "(further zero-match runs will log at DEBUG until reload)",
+                        rule_name,
+                    )
+                    self._warned_empty_rules.add(rule_name)
+                else:
+                    _LOGGER.debug(
+                        "recorder_tuning: rule '%s' still matches no entities",
+                        rule_name,
+                    )
                 continue
+
+            # Rule matched at least once — clear any prior suppression so a
+            # future zero-match (e.g., integration unloaded) warns again.
+            self._warned_empty_rules.discard(rule_name)
 
             keep_days = rule[CONF_KEEP_DAYS]  # required by _RULE_SCHEMA
 
             # Always log what will be (or would be) purged before acting
             await self._log_purge_plan(
-                rule[CONF_RULE_NAME], entity_ids, keep_days, dry_run=dry_run
+                rule_name, entity_ids, keep_days, dry_run=dry_run
             )
 
             if not dry_run:
@@ -696,6 +733,9 @@ class RecorderTuningManager:
         """
         yaml_rules = await self.hass.async_add_executor_job(_load_yaml_rules, self.hass)
         self.rules = yaml_rules
+        # Rule set replaced → reset zero-match warning suppression so each
+        # rule gets a fresh chance to warn once.
+        self._warned_empty_rules.clear()
         _LOGGER.info(
             "recorder_tuning: reloaded %d rule(s) from %s",
             len(self.rules),
@@ -722,3 +762,4 @@ class RecorderTuningManager:
         if self._unsub_timer:
             self._unsub_timer()
             self._unsub_timer = None
+        self._scheduled_at = None
