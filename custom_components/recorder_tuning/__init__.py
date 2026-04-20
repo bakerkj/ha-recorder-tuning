@@ -840,7 +840,7 @@ class RecorderTuningManager:
                 # as the task is queued, not after the delete).
                 await self._drain_recorder_queue(rule_name)
                 _LOGGER.info(
-                    "recorder_tuning: rule '%s' complete — %d entities",
+                    "rule '%s' complete — %d entities",
                     rule_name,
                     len(entity_ids),
                 )
