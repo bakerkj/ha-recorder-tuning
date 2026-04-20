@@ -55,6 +55,14 @@ _STATS_KEEP_DAYS_KEY = f"{DOMAIN}_stats_keep_days"
 # Attribute tag on our wrapper so we can recognise it on unload/reload and
 # avoid wrapping ourselves twice, or unwrapping someone else's patch.
 _WRAPPER_TAG = f"__{DOMAIN}_wrapped__"
+# Batch size for recorder.purge_entities service calls and the matching
+# per-entity row-count query used in dry-run / pre-purge logging. Kept well
+# under SQLite's default max-variables limit (999).
+_PURGE_BATCH_SIZE = 100
+# Maximum number of per-entity log lines emitted at INFO in dry-run mode.
+# Extra entities are summarised as "…and N more" to keep the log readable on
+# large installations. The full list is always available at DEBUG.
+_DRY_RUN_LOG_CAP = 25
 
 # Voluptuous schema for a single rule loaded from YAML
 _RULE_SCHEMA = vol.Schema(
@@ -113,23 +121,6 @@ def _load_yaml_rules(hass: HomeAssistant) -> list[dict] | None:
 
     _LOGGER.info("recorder_tuning: loaded %d rule(s) from %s", len(rules), yaml_path)
     return rules
-
-
-async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Handle migration of a config entry to a newer schema version.
-
-    Version 1 is the only version so far.  Add migration logic here when
-    ``RecorderTuningConfigFlow.VERSION`` is bumped, following the pattern:
-
-        if entry.version < 2:
-            new_data = {**entry.data, "new_field": default_value}
-            hass.config_entries.async_update_entry(entry, data=new_data, version=2)
-    """
-    _LOGGER.debug(
-        "recorder_tuning: config entry is at version %d, no migration needed",
-        entry.version,
-    )
-    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -409,9 +400,8 @@ class RecorderTuningManager:
             )
 
             if not dry_run:
-                batch_size = 100
-                for i in range(0, len(entity_ids), batch_size):
-                    batch = entity_ids[i : i + batch_size]
+                for i in range(0, len(entity_ids), _PURGE_BATCH_SIZE):
+                    batch = entity_ids[i : i + _PURGE_BATCH_SIZE]
                     await self.hass.services.async_call(
                         "recorder",
                         "purge_entities",
@@ -456,9 +446,8 @@ class RecorderTuningManager:
         def _query() -> dict[str, tuple[int, float]]:
             results: dict[str, tuple[int, float]] = {}
             with session_scope(session=instance.get_session()) as session:
-                batch_size = 100
-                for i in range(0, len(entity_ids), batch_size):
-                    batch = entity_ids[i : i + batch_size]
+                for i in range(0, len(entity_ids), _PURGE_BATCH_SIZE):
+                    batch = entity_ids[i : i + _PURGE_BATCH_SIZE]
                     rows = session.execute(
                         select(
                             StatesMeta.entity_id,
@@ -478,6 +467,10 @@ class RecorderTuningManager:
         try:
             results = await self.hass.async_add_executor_job(_query)
         except Exception as err:  # noqa: BLE001
+            # Broad catch is intentional: SQLAlchemy / recorder can raise a
+            # wide range of errors (OperationalError, InterfaceError, driver
+            # exceptions, schema drift). A failed pre-purge log must never
+            # break the rest of the purge run — log and move on.
             _LOGGER.error(
                 "recorder_tuning: %s rule '%s' — DB query failed: %s",
                 prefix,
@@ -497,8 +490,19 @@ class RecorderTuningManager:
             cutoff.strftime("%Y-%m-%d %H:%M UTC"),
             total_rows,
         )
+        # In dry-run mode each per-entity line is emitted at INFO. Cap the
+        # visible lines so the log stays readable on large installations;
+        # the full list is still available at DEBUG.
+        sorted_results = sorted(results.items())
+        if dry_run and len(sorted_results) > _DRY_RUN_LOG_CAP:
+            visible = sorted_results[:_DRY_RUN_LOG_CAP]
+            hidden = sorted_results[_DRY_RUN_LOG_CAP:]
+        else:
+            visible = sorted_results
+            hidden = []
+
         log_entity = _LOGGER.info if dry_run else _LOGGER.debug
-        for entity_id, (cnt, oldest_ts) in sorted(results.items()):
+        for entity_id, (cnt, oldest_ts) in visible:
             oldest = datetime.fromtimestamp(oldest_ts, tz=timezone.utc)
             log_entity(
                 "recorder_tuning: %s   %-60s  %6d rows  %s → %s",
@@ -508,6 +512,24 @@ class RecorderTuningManager:
                 oldest.strftime("%Y-%m-%d %H:%M UTC"),
                 cutoff.strftime("%Y-%m-%d %H:%M UTC"),
             )
+        if hidden:
+            hidden_rows = sum(cnt for _, (cnt, _) in hidden)
+            _LOGGER.info(
+                "recorder_tuning: %s   …and %d more entities (%d rows) — see DEBUG log",
+                prefix,
+                len(hidden),
+                hidden_rows,
+            )
+            for entity_id, (cnt, oldest_ts) in hidden:
+                oldest = datetime.fromtimestamp(oldest_ts, tz=timezone.utc)
+                _LOGGER.debug(
+                    "recorder_tuning: %s   %-60s  %6d rows  %s → %s",
+                    prefix,
+                    entity_id,
+                    cnt,
+                    oldest.strftime("%Y-%m-%d %H:%M UTC"),
+                    cutoff.strftime("%Y-%m-%d %H:%M UTC"),
+                )
         if not results:
             _LOGGER.info(
                 "recorder_tuning: %s rule '%s' — nothing to purge", prefix, rule_name
