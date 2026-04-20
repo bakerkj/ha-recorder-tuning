@@ -9,9 +9,11 @@ run_purge_now:
     dry_run:
       name: Dry Run
       description: >-
-        When true, logs the entity name, row count, and date range of data that
-        would be deleted for each rule — without deleting anything. When
-        omitted, inherits the dry_run setting from configuration.yaml.
+        When true, every rule in this call runs dry (logs only). When false,
+        every rule runs live, overriding any per-rule dry_run settings (but NOT
+        the top-level dry_run lock — if configuration.yaml has dry_run: true at
+        the top level, nothing can override it). When omitted, per-rule dry_run
+        settings apply, falling through to the top-level value.
       required: false
       example: true
       selector:

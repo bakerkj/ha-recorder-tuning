@@ -125,15 +125,42 @@ In dry-run mode the prefix reads `[DRY RUN]` instead of `[PURGE]`. The same
 per-entity detail is logged in both modes so you can always audit what was (or
 would have been) deleted.
 
-To disable dry-run and start live purging:
+### Dry-run precedence
 
-- **Globally**: flip `dry_run: false` under `recorder_tuning:` in
-  `configuration.yaml` and call `recorder_tuning.reload`.
-- **One-off**: call `recorder_tuning.run_purge_now` with `dry_run: false` for a
-  single live purge while leaving the YAML setting unchanged.
-- **Per-rule**: add `dry_run: true` (or `false`) to an individual rule to force
-  its mode regardless of the top-level setting. Useful when rolling out rules
-  one at a time — turn each rule live as you gain confidence in its log output.
+For any given rule on any given run, the effective dry-run value is resolved in
+this order:
+
+1. **Top-level `dry_run: true`** in `configuration.yaml` is a **safety lock**.
+   Nothing below can override it — no service call, no per-rule setting. While
+   this lock is on, no data can be deleted, period.
+2. **Service-call `dry_run:`** (if explicitly passed to
+   `recorder_tuning.run_purge_now`) wins over per-rule settings.
+3. **Per-rule `dry_run:`** (if set on that rule) wins over the top-level
+   fallback.
+4. **Top-level `dry_run:`** (false at this point) is the fallback.
+
+Concrete implications:
+
+- `dry_run: true` at the top is how you go live: your rules do nothing no matter
+  what they say. You flip it to `false` to unlock.
+- With the lock off, a rule with `dry_run: true` stays dry on scheduled runs —
+  useful to pause an individual rule during rollout without disabling it.
+- A service call with `dry_run: false` forces a rule to run live _for that one
+  call only_ (but only if the top-level lock is off). Useful for one-off
+  testing.
+- A service call with `dry_run: true` forces every rule in that call to stay dry
+  regardless of per-rule settings.
+
+### Typical rollout path
+
+1. Set `dry_run: true` on every rule in the YAML (the safety default).
+2. Set top-level `dry_run: true`. Deploy. Watch the log for a few nights.
+3. Flip top-level to `dry_run: false` — nothing changes yet because every rule
+   is still individually `dry_run: true`.
+4. Pick one rule you trust. Flip _its_ `dry_run: false`. Reload. It now runs
+   live on the next schedule. Verify in the log.
+5. Repeat for each rule until all are live; delete the per-rule `dry_run:` lines
+   when you're fully confident.
 
 ### Rule matching
 

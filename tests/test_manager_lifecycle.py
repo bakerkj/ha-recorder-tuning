@@ -116,7 +116,7 @@ async def test_zero_match_warns_once_then_debug(caplog):
         ):
             caplog.set_level(logging.DEBUG)
 
-            await manager._execute_all_rules(dry_run=True)
+            await manager._execute_all_rules(service_dry_run=True)
             # First run → WARNING
             warnings = [
                 r
@@ -127,7 +127,7 @@ async def test_zero_match_warns_once_then_debug(caplog):
             assert "stale" in manager._warned_empty_rules
 
             caplog.clear()
-            await manager._execute_all_rules(dry_run=True)
+            await manager._execute_all_rules(service_dry_run=True)
             # Second run → DEBUG only, no more WARNING
             warnings = [
                 r
@@ -166,7 +166,7 @@ async def test_zero_match_suppression_clears_when_rule_recovers():
         with patch(
             "custom_components.recorder_tuning.er.async_get", return_value=MagicMock()
         ):
-            await manager._execute_all_rules(dry_run=True)
+            await manager._execute_all_rules(service_dry_run=True)
     assert "recoverable" in manager._warned_empty_rules
 
     # Then: rule matches → discard from suppressed set.
@@ -176,8 +176,169 @@ async def test_zero_match_suppression_clears_when_rule_recovers():
                 "custom_components.recorder_tuning.er.async_get",
                 return_value=MagicMock(),
             ):
-                await manager._execute_all_rules(dry_run=True)
+                await manager._execute_all_rules(service_dry_run=True)
     assert "recoverable" not in manager._warned_empty_rules
+
+
+# ---------------------------------------------------------------------------
+# _effective_dry_run precedence matrix (top-level safety lock; service wins
+# over per-rule; per-rule wins over top-level; top-level is the fallback).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "top,service,rule,expected",
+    [
+        # Top-level lock beats everything.
+        (True, None, None, True),
+        (True, False, False, True),
+        (True, True, True, True),
+        (True, False, True, True),
+        (True, True, False, True),
+        # Top=false + service provided → service wins over per-rule.
+        (False, True, None, True),
+        (False, False, None, False),
+        (False, True, False, True),
+        (False, False, True, False),
+        # Top=false + service unset → per-rule wins.
+        (False, None, True, True),
+        (False, None, False, False),
+        # Top=false + service unset + rule unset → inherit top (false).
+        (False, None, None, False),
+    ],
+)
+def test_effective_dry_run_matrix(top, service, rule, expected):
+    from custom_components.recorder_tuning import _effective_dry_run
+
+    assert _effective_dry_run(top, service, rule) is expected
+
+
+def _make_manager_with_full_config(rules_list, *, top_dry_run=False):
+    """Build a manager with a specific top-level dry_run + rule set."""
+    from custom_components.recorder_tuning import RecorderTuningManager
+
+    hass = MagicMock()
+    hass.services.async_call = AsyncMock()
+    config = {
+        "purge_time": "03:00",
+        "dry_run": top_dry_run,
+        "rules": rules_list,
+        "ha_recorder_purge": {
+            "enabled": False,
+            "repack": "never",
+            "force_repack": False,
+        },
+    }
+    return hass, RecorderTuningManager(hass, config)
+
+
+def _make_rule(name, *, dry_run=None, entity_ids=None):
+    return {
+        "name": name,
+        "entity_ids": entity_ids or [f"sensor.{name}"],
+        "keep_days": 7,
+        "enabled": True,
+        "dry_run": dry_run,
+        "match_mode": "all",
+    }
+
+
+@pytest.mark.asyncio
+async def test_top_level_dry_run_locks_even_when_rule_overrides_to_false():
+    """Top-level dry_run=true must override per-rule dry_run=false."""
+    hass, manager = _make_manager_with_full_config(
+        [_make_rule("aggressive_rule", dry_run=False)], top_dry_run=True
+    )
+    with patch.object(
+        manager, "_resolve_entities", side_effect=lambda r, reg: r["entity_ids"]
+    ):
+        with patch.object(manager, "_log_purge_plan", new_callable=AsyncMock):
+            with patch(
+                "custom_components.recorder_tuning.er.async_get",
+                return_value=MagicMock(),
+            ):
+                await manager._execute_all_rules()
+
+    assert not [
+        c
+        for c in hass.services.async_call.call_args_list
+        if c.args[:2] == ("recorder", "purge_entities")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_service_dry_run_true_forces_dry_even_when_rule_says_false():
+    """Service dry_run=true beats per-rule dry_run=false (top-level is false)."""
+    hass, manager = _make_manager_with_full_config(
+        [_make_rule("rule_a", dry_run=False)]
+    )
+    with patch.object(
+        manager, "_resolve_entities", side_effect=lambda r, reg: r["entity_ids"]
+    ):
+        with patch.object(manager, "_log_purge_plan", new_callable=AsyncMock):
+            with patch(
+                "custom_components.recorder_tuning.er.async_get",
+                return_value=MagicMock(),
+            ):
+                await manager._execute_all_rules(service_dry_run=True)
+
+    assert not [
+        c
+        for c in hass.services.async_call.call_args_list
+        if c.args[:2] == ("recorder", "purge_entities")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_service_dry_run_false_forces_live_even_when_rule_says_true():
+    """Service dry_run=false beats per-rule dry_run=true (top-level is false)."""
+    hass, manager = _make_manager_with_full_config([_make_rule("rule_a", dry_run=True)])
+    with patch.object(
+        manager, "_resolve_entities", side_effect=lambda r, reg: r["entity_ids"]
+    ):
+        with patch.object(manager, "_log_purge_plan", new_callable=AsyncMock):
+            with patch(
+                "custom_components.recorder_tuning.er.async_get",
+                return_value=MagicMock(),
+            ):
+                await manager._execute_all_rules(service_dry_run=False)
+
+    purge_calls = [
+        c
+        for c in hass.services.async_call.call_args_list
+        if c.args[:2] == ("recorder", "purge_entities")
+    ]
+    assert len(purge_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_mixed_mode_log_when_rules_disagree(caplog):
+    """Scheduled-style run with different per-rule dry_runs emits MIXED log line."""
+    import logging
+
+    rules = [
+        _make_rule("dry_rule", dry_run=True),
+        _make_rule("live_rule", dry_run=False),
+    ]
+    hass, manager = _make_manager_with_full_config(rules)
+    caplog.set_level(logging.INFO)
+
+    with patch.object(
+        manager, "_resolve_entities", side_effect=lambda r, reg: r["entity_ids"]
+    ):
+        with patch.object(manager, "_log_purge_plan", new_callable=AsyncMock):
+            with patch(
+                "custom_components.recorder_tuning.er.async_get",
+                return_value=MagicMock(),
+            ):
+                await manager._execute_all_rules()
+
+    msgs = [r.message for r in caplog.records]
+    assert any(
+        "[MIXED] starting" in m and "1 rule(s) LIVE" in m and "1 rule(s) DRY RUN" in m
+        for m in msgs
+    )
+    assert any("[MIXED] complete" in m for m in msgs)
 
 
 def test_update_config_clears_zero_match_suppression():
@@ -232,7 +393,7 @@ async def test_recorder_purge_called_after_rules_when_enabled():
     with patch(
         "custom_components.recorder_tuning.er.async_get", return_value=MagicMock()
     ):
-        await manager._execute_all_rules(dry_run=False)
+        await manager._execute_all_rules(service_dry_run=False)
 
     calls = [
         c
@@ -251,7 +412,7 @@ async def test_recorder_purge_skipped_when_disabled():
     with patch(
         "custom_components.recorder_tuning.er.async_get", return_value=MagicMock()
     ):
-        await manager._execute_all_rules(dry_run=False)
+        await manager._execute_all_rules(service_dry_run=False)
 
     calls = [
         c
@@ -268,7 +429,7 @@ async def test_recorder_purge_skipped_in_dry_run():
     with patch(
         "custom_components.recorder_tuning.er.async_get", return_value=MagicMock()
     ):
-        await manager._execute_all_rules(dry_run=True)
+        await manager._execute_all_rules(service_dry_run=True)
 
     calls = [
         c
@@ -285,7 +446,7 @@ async def test_recorder_purge_passes_repack_option():
     with patch(
         "custom_components.recorder_tuning.er.async_get", return_value=MagicMock()
     ):
-        await manager._execute_all_rules(dry_run=False)
+        await manager._execute_all_rules(service_dry_run=False)
 
     calls = [
         c
@@ -360,7 +521,7 @@ async def test_recorder_purge_cadence_on_matching_day_sends_repack_true(freezer)
     with patch(
         "custom_components.recorder_tuning.er.async_get", return_value=MagicMock()
     ):
-        await manager._execute_all_rules(dry_run=False)
+        await manager._execute_all_rules(service_dry_run=False)
 
     calls = [
         c
@@ -382,7 +543,7 @@ async def test_recorder_purge_cadence_off_day_sends_repack_false(freezer):
     with patch(
         "custom_components.recorder_tuning.er.async_get", return_value=MagicMock()
     ):
-        await manager._execute_all_rules(dry_run=False)
+        await manager._execute_all_rules(service_dry_run=False)
 
     calls = [
         c
@@ -786,7 +947,7 @@ async def test_recorder_purge_failure_is_logged_not_raised(caplog):
         "custom_components.recorder_tuning.er.async_get", return_value=MagicMock()
     ):
         # Must not raise
-        await manager._execute_all_rules(dry_run=False)
+        await manager._execute_all_rules(service_dry_run=False)
 
     assert any(
         "recorder.purge failed" in r.message
