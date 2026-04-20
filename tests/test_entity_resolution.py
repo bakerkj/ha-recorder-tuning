@@ -254,20 +254,6 @@ def test_resolve_regex_exclude_can_remove_all():
     assert result == []
 
 
-def test_resolve_invalid_regex_include_skipped(caplog):
-    manager = _make_manager()
-    reg = _make_registry(_make_entry("sensor.foo"))
-    rule = {
-        CONF_RULE_NAME: "r",
-        CONF_ENTITY_REGEX_INCLUDE: ["[invalid"],
-        CONF_KEEP_DAYS: 3,
-        CONF_ENABLED: True,
-    }
-    # Should not raise; bad pattern is logged and skipped
-    result = manager._resolve_entities(rule, reg)
-    assert isinstance(result, list)
-
-
 # ---------------------------------------------------------------------------
 # Combined selectors — union of positives, then exclude
 # ---------------------------------------------------------------------------

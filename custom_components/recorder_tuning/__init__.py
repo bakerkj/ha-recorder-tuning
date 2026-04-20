@@ -61,6 +61,24 @@ _PURGE_BATCH_SIZE = 100
 # large installations. The full list is always available at DEBUG.
 _DRY_RUN_LOG_CAP = 25
 
+
+def _regex_pattern(value: str) -> str:
+    """Voluptuous validator: raise ``vol.Invalid`` if ``value`` isn't a valid regex.
+
+    Running this at YAML load time means a bad pattern surfaces as a rule-level
+    validation error (via ``_load_yaml_rules``'s "skipping rule[i]" path) and
+    is visible to the user when they call ``recorder_tuning.reload``, not
+    hours later when a scheduled purge runs.
+    """
+    if not isinstance(value, str):
+        raise vol.Invalid(f"regex must be a string, got {type(value).__name__}")
+    try:
+        re.compile(value)
+    except re.error as err:
+        raise vol.Invalid(f"invalid regex {value!r}: {err}") from err
+    return value
+
+
 # Voluptuous schema for a single rule loaded from YAML
 _RULE_SCHEMA = vol.Schema(
     {
@@ -69,8 +87,8 @@ _RULE_SCHEMA = vol.Schema(
         vol.Optional(CONF_DEVICE_IDS, default=[]): [str],
         vol.Optional(CONF_ENTITY_IDS, default=[]): [str],
         vol.Optional(CONF_ENTITY_GLOBS, default=[]): [str],
-        vol.Optional(CONF_ENTITY_REGEX_INCLUDE, default=[]): [str],
-        vol.Optional(CONF_ENTITY_REGEX_EXCLUDE, default=[]): [str],
+        vol.Optional(CONF_ENTITY_REGEX_INCLUDE, default=[]): [_regex_pattern],
+        vol.Optional(CONF_ENTITY_REGEX_EXCLUDE, default=[]): [_regex_pattern],
         vol.Required(CONF_KEEP_DAYS): vol.All(int, vol.Range(min=1, max=365)),
         vol.Optional(CONF_ENABLED, default=True): bool,
     }
@@ -641,34 +659,18 @@ class RecorderTuningManager:
         for pattern in rule.get(CONF_ENTITY_GLOBS, []):
             candidates.update(fnmatch.filter(all_entity_ids(), pattern))
 
-        # Regex include — union with candidates
+        # Regex patterns have been validated by _RULE_SCHEMA → _regex_pattern at
+        # load time; re.compile here cannot raise. re's internal cache makes
+        # repeated compilation essentially free.
         for pattern in rule.get(CONF_ENTITY_REGEX_INCLUDE, []):
-            try:
-                compiled = re.compile(pattern)
-                candidates.update(
-                    eid for eid in all_entity_ids() if compiled.search(eid)
-                )
-            except re.error as err:
-                _LOGGER.warning(
-                    "recorder_tuning: rule '%s' invalid regex_include '%s': %s",
-                    rule[CONF_RULE_NAME],
-                    pattern,
-                    err,
-                )
+            compiled = re.compile(pattern)
+            candidates.update(eid for eid in all_entity_ids() if compiled.search(eid))
 
         # --- Negative selector: regex exclude applied to candidate set ---
         excluded: set[str] = set()
         for pattern in rule.get(CONF_ENTITY_REGEX_EXCLUDE, []):
-            try:
-                compiled = re.compile(pattern)
-                excluded.update(eid for eid in candidates if compiled.search(eid))
-            except re.error as err:
-                _LOGGER.warning(
-                    "recorder_tuning: rule '%s' invalid regex_exclude '%s': %s",
-                    rule[CONF_RULE_NAME],
-                    pattern,
-                    err,
-                )
+            compiled = re.compile(pattern)
+            excluded.update(eid for eid in candidates if compiled.search(eid))
 
         resolved = candidates - excluded
 

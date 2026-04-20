@@ -170,6 +170,49 @@ rules:
     assert "skipping rule[1]" in caplog.text
 
 
+def test_invalid_regex_include_skips_rule(tmp_path, caplog):
+    """A rule with an invalid regex_include pattern is dropped at load time."""
+    from custom_components.recorder_tuning import _load_yaml_rules
+
+    _write_yaml(
+        tmp_path,
+        """\
+rules:
+  - name: bad_regex
+    entity_regex_include: ["[unclosed"]
+    keep_days: 7
+  - name: good
+    entity_regex_include: ["^sensor\\\\."]
+    keep_days: 3
+""",
+    )
+
+    rules = _load_yaml_rules(_hass_with_config_dir(tmp_path))
+    assert [r["name"] for r in rules] == ["good"]
+    assert "invalid regex" in caplog.text
+    assert "skipping rule[0]" in caplog.text
+
+
+def test_invalid_regex_exclude_skips_rule(tmp_path, caplog):
+    """Invalid regex in regex_exclude also drops the rule at load time."""
+    from custom_components.recorder_tuning import _load_yaml_rules
+
+    _write_yaml(
+        tmp_path,
+        """\
+rules:
+  - name: bad_exclude
+    entity_globs: ["sensor.*"]
+    entity_regex_exclude: ["(unclosed"]
+    keep_days: 7
+""",
+    )
+
+    rules = _load_yaml_rules(_hass_with_config_dir(tmp_path))
+    assert rules == []
+    assert "invalid regex" in caplog.text
+
+
 @pytest.mark.parametrize("bad_keep_days", [0, -1, 400])
 def test_rule_with_keep_days_out_of_range_skipped(tmp_path, bad_keep_days):
     from custom_components.recorder_tuning import _load_yaml_rules
