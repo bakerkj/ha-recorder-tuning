@@ -44,25 +44,30 @@ CONF_DRY_RUN = "dry_run"
 # testing specific rules, not the global sweep).
 CONF_RULE_NAMES = "rule_names"
 
-# After per-entity rules finish, optionally call HA's ``recorder.purge``
-# service so the global ``purge_keep_days`` sweeps whatever the rules don't
-# cover AND the short-term stats monkey-patch gets a chance to fire.
-# Default True means recorder_tuning owns the nightly purge timing; set
-# ``auto_purge: false`` on the recorder itself to avoid double-firing.
-CONF_RUN_RECORDER_PURGE = "run_recorder_purge"
-DEFAULT_RUN_RECORDER_PURGE = True
-# ``recorder_purge_repack`` is the "always repack on every purge run" override
-# — expensive, usually not what you want. If false, the cadence is controlled
-# by ``auto_repack`` below.
-CONF_RECORDER_PURGE_REPACK = "recorder_purge_repack"
-DEFAULT_RECORDER_PURGE_REPACK = False
+# Nested config block controlling how (and whether) we trigger HA's own
+# ``recorder.purge`` service after our per-entity rules finish. All fields
+# below live inside ``ha_recorder_purge:`` in configuration.yaml.
+#
+# ``enabled``     — if true, after the rules run call ``recorder.purge`` so
+#                   the global ``purge_keep_days`` sweeps what rules don't
+#                   cover AND the short-term stats monkey-patch fires. Intended
+#                   to replace HA's ``auto_purge`` — set ``auto_purge: false``
+#                   on the recorder itself to avoid double-firing.
+# ``repack``      — cadence for ``repack=True`` on the purge call. Presets:
+#                     never    — no scheduled repack
+#                     weekly   — every Sunday
+#                     monthly  — second Sunday of the month (HA's native
+#                                ``auto_repack`` cadence)
+# ``force_repack``— always-repack override. If true, repack on every purge run
+#                   regardless of ``repack`` cadence. Expensive.
+CONF_HA_RECORDER_PURGE = "ha_recorder_purge"
+CONF_HA_RECORDER_PURGE_ENABLED = "enabled"
+CONF_HA_RECORDER_PURGE_REPACK = "repack"
+CONF_HA_RECORDER_PURGE_FORCE_REPACK = "force_repack"
 
-# Auto-repack cadence — three presets mirror the common choices:
-#   never    — no repack (override-only)
-#   weekly   — every Sunday
-#   monthly  — second Sunday of the month (HA's native auto_repack cadence)
-CONF_AUTO_REPACK = "auto_repack"
-AUTO_REPACK_NEVER = "never"
-AUTO_REPACK_WEEKLY = "weekly"
-AUTO_REPACK_MONTHLY = "monthly"
-DEFAULT_AUTO_REPACK = AUTO_REPACK_MONTHLY
+DEFAULT_HA_RECORDER_PURGE_ENABLED = True
+REPACK_NEVER = "never"
+REPACK_WEEKLY = "weekly"
+REPACK_MONTHLY = "monthly"
+DEFAULT_HA_RECORDER_PURGE_REPACK = REPACK_MONTHLY
+DEFAULT_HA_RECORDER_PURGE_FORCE_REPACK = False

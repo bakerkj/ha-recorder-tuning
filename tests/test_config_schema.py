@@ -32,40 +32,57 @@ def test_top_level_defaults_filled_when_only_rules_given():
     assert result["purge_time"] == "03:00"
     assert result["stats_keep_days"] == 30
     assert result["dry_run"] is True
-    assert result["run_recorder_purge"] is True
-    assert result["recorder_purge_repack"] is False
+    assert result["ha_recorder_purge"] == {
+        "enabled": True,
+        "repack": "monthly",
+        "force_repack": False,
+    }
     assert result["rules"] == []
 
 
+# ---------------------------------------------------------------------------
+# ha_recorder_purge: nested block
+# ---------------------------------------------------------------------------
+
+
+def test_ha_recorder_purge_partial_block_fills_sub_defaults():
+    """Only specifying some sub-fields leaves others at their default."""
+    result = _validate({"ha_recorder_purge": {"enabled": False}, "rules": []})
+    assert result["ha_recorder_purge"] == {
+        "enabled": False,
+        "repack": "monthly",
+        "force_repack": False,
+    }
+
+
 @pytest.mark.parametrize(
-    "key,value",
+    "field,value",
     [
-        ("run_recorder_purge", False),
-        ("run_recorder_purge", True),
-        ("recorder_purge_repack", True),
-        ("recorder_purge_repack", False),
+        ("enabled", True),
+        ("enabled", False),
+        ("force_repack", True),
+        ("force_repack", False),
     ],
 )
-def test_top_level_recorder_purge_knobs_accept_bool(key, value):
-    result = _validate({key: value, "rules": []})
-    assert result[key] is value
+def test_ha_recorder_purge_bool_fields_accept_bool(field, value):
+    result = _validate({"ha_recorder_purge": {field: value}, "rules": []})
+    assert result["ha_recorder_purge"][field] is value
 
 
 @pytest.mark.parametrize("cadence", ["never", "weekly", "monthly"])
-def test_auto_repack_accepts_known_cadences(cadence):
-    result = _validate({"auto_repack": cadence, "rules": []})
-    assert result["auto_repack"] == cadence
+def test_ha_recorder_purge_repack_accepts_known_cadences(cadence):
+    result = _validate({"ha_recorder_purge": {"repack": cadence}, "rules": []})
+    assert result["ha_recorder_purge"]["repack"] == cadence
 
 
-def test_auto_repack_defaults_to_monthly():
-    """Mirrors HA's native auto_repack cadence (second Sunday of the month)."""
-    result = _validate({"rules": []})
-    assert result["auto_repack"] == "monthly"
-
-
-def test_auto_repack_rejects_unknown_cadence():
+def test_ha_recorder_purge_repack_rejects_unknown_cadence():
     with pytest.raises(vol.Invalid):
-        _validate({"auto_repack": "daily", "rules": []})
+        _validate({"ha_recorder_purge": {"repack": "daily"}, "rules": []})
+
+
+def test_ha_recorder_purge_rejects_unknown_field():
+    with pytest.raises(vol.Invalid):
+        _validate({"ha_recorder_purge": {"not_a_field": True}, "rules": []})
 
 
 def test_top_level_accepts_all_fields():
