@@ -75,9 +75,9 @@ _WRAPPER_TAG = f"__{DOMAIN}_wrapped__"
 # per-entity row-count query used in dry-run / pre-purge logging. Kept well
 # under SQLite's default max-variables limit (999).
 _PURGE_BATCH_SIZE = 100
-# Maximum number of per-entity log lines emitted at INFO in dry-run mode.
-# Extra entities are summarised as "…and N more" to keep the log readable on
-# large installations. The full list is always available at DEBUG.
+# Cap on the minority-list length in the dry-run summary logged on setup /
+# reload (_log_dry_run_summary). Beyond this the list is truncated with
+# "…and N more" so the startup log stays readable on large installs.
 _DRY_RUN_LOG_CAP = 25
 
 
@@ -147,6 +147,41 @@ def _effective_dry_run(
     if rule is not None:
         return rule
     return top_level  # False here
+
+
+# `name` is intentionally absent: it already appears in the summary line
+# that precedes these config lines. `enabled` is absent because disabled
+# rules are filtered out before this log fires.
+_RULE_CONFIG_LOG_KEYS = (
+    CONF_INTEGRATION_FILTER,
+    CONF_DEVICE_IDS,
+    CONF_ENTITY_IDS,
+    CONF_ENTITY_GLOBS,
+    CONF_ENTITY_REGEX_INCLUDE,
+    CONF_ENTITY_REGEX_EXCLUDE,
+    CONF_KEEP_DAYS,
+    CONF_MATCH_MODE,
+    CONF_DRY_RUN,
+)
+
+
+def _rule_config_lines(rule: dict) -> list[str]:
+    """Return one ``key: value`` line per non-empty rule field, in schema order.
+
+    Drops empty selector lists and ``dry_run: None`` so the pre-purge log
+    shows only the fields the user actually set (or the schema defaulted
+    to something meaningful). Key order matches ``_RULE_SCHEMA`` so logs
+    are diff-friendly run over run.
+    """
+    lines: list[str] = []
+    for key in _RULE_CONFIG_LOG_KEYS:
+        if key not in rule:
+            continue
+        value = rule[key]
+        if value in (None, [], ""):
+            continue
+        lines.append(f"{key}: {value}")
+    return lines
 
 
 def _purge_time_validator(value: Any) -> str:
@@ -316,6 +351,7 @@ def _make_reload_handler(hass: HomeAssistant, manager: RecorderTuningManager):
             "recorder_tuning: reloaded from configuration.yaml — %d rule(s)",
             len(manager.rules),
         )
+        manager._log_dry_run_summary()
 
     return _reload
 
@@ -462,6 +498,61 @@ class RecorderTuningManager:
             len(self.rules),
             self.config.get(CONF_PURGE_TIME, DEFAULT_PURGE_TIME),
         )
+        self._log_dry_run_summary()
+
+    def _log_dry_run_summary(self) -> None:
+        """Log which enabled rules will run LIVE vs DRY RUN on the next firing.
+
+        Called on setup and on reload so the user can verify rollout state at
+        a glance. Applies the same ``_effective_dry_run`` precedence the
+        scheduled run uses (service call = None), so the summary predicts what
+        the next nightly firing will do.
+
+        The minority set is listed by name (LIVE ties go to LIVE) so you can
+        see exactly which rules are in the non-majority mode — most useful
+        during rollout when only a few rules have been flipped to LIVE.
+        Capped at ``_DRY_RUN_LOG_CAP`` to stay readable on large installs.
+        """
+        top_level = self.config.get(CONF_DRY_RUN, DEFAULT_DRY_RUN)
+        enabled = [r for r in self.rules if r.get(CONF_ENABLED, True)]
+
+        if top_level:
+            _LOGGER.info(
+                "recorder_tuning: top-level dry_run: true — all %d enabled rule(s) "
+                "locked to DRY RUN",
+                len(enabled),
+            )
+            return
+
+        if not enabled:
+            return
+
+        live: list[str] = []
+        dry: list[str] = []
+        for rule in enabled:
+            eff = _effective_dry_run(
+                top_level=top_level, service=None, rule=rule.get(CONF_DRY_RUN)
+            )
+            (dry if eff else live).append(rule[CONF_RULE_NAME])
+
+        _LOGGER.info(
+            "recorder_tuning: dry-run summary — %d rule(s) LIVE, %d rule(s) DRY RUN",
+            len(live),
+            len(dry),
+        )
+
+        if not live or not dry:
+            return
+
+        minority, label = (live, "LIVE") if len(live) <= len(dry) else (dry, "DRY RUN")
+        for name in sorted(minority)[:_DRY_RUN_LOG_CAP]:
+            _LOGGER.info("recorder_tuning:   [%s] %s", label, name)
+        if len(minority) > _DRY_RUN_LOG_CAP:
+            _LOGGER.info(
+                "recorder_tuning:   [%s] …and %d more",
+                label,
+                len(minority) - _DRY_RUN_LOG_CAP,
+            )
 
     def update_config(self, new_config: dict) -> None:
         """Swap in a new validated config block (called by the reload handler).
@@ -707,10 +798,10 @@ class RecorderTuningManager:
 
             keep_days = rule[CONF_KEEP_DAYS]  # required by _RULE_SCHEMA
 
-            # Always log what will be (or would be) purged before acting
-            await self._log_purge_plan(
-                rule_name, entity_ids, keep_days, dry_run=rule_dry_run
-            )
+            # Always log what will be (or would be) purged before acting.
+            # _log_purge_plan emits the summary, per-rule config dump, and
+            # per-entity lines together so the shape stays consistent.
+            await self._log_purge_plan(rule, entity_ids, dry_run=rule_dry_run)
 
             if not rule_dry_run:
                 for i in range(0, len(entity_ids), _PURGE_BATCH_SIZE):
@@ -777,26 +868,36 @@ class RecorderTuningManager:
 
     async def _log_purge_plan(
         self,
-        rule_name: str,
+        rule: dict,
         entity_ids: list[str],
-        keep_days: int,
         dry_run: bool = True,
     ) -> None:
         """Query and log which rows will be (or would be) removed for a rule.
 
+        Emits in this order:
+
+        1. Summary line — ``rule 'X' (keep 7d) — M of K matched entities ...``
+           (or ``nothing to purge`` when no rows are old enough)
+        2. Per-rule config dump — one indented ``key: value`` line per
+           non-empty field (see ``_rule_config_lines``)
+        3. Per-entity rows — one indented line per entity with a row count
+           and the oldest timestamp being trimmed
+
         Called before every purge, regardless of dry-run mode. The log prefix
         is ``[DRY RUN]`` or ``[PURGE]`` so lines are easy to grep.
 
-        In dry-run mode the per-entity row details are logged at INFO so they
-        are visible by default. In live mode they are logged at DEBUG to avoid
-        flooding the log on large instances — the INFO summary line (total rows
-        across all matched entities) is always emitted in both modes.
+        Every matched entity is emitted at INFO — no cap, no DEBUG fallback.
+        The user wants full visibility of what the purge touches in the
+        default HA log. Operators on very large installs can raise the
+        ``recorder_tuning`` logger to WARNING if the noise is a problem.
 
         Note on accuracy: the query and the subsequent ``purge_entities`` call
         are not in a single transaction, so new rows can land between them.
         Counts below are a snapshot at query time; the actual delete count
         may differ slightly on a busy instance.
         """
+        rule_name = rule[CONF_RULE_NAME]
+        keep_days = rule[CONF_KEEP_DAYS]
         prefix = "[DRY RUN]" if dry_run else "[PURGE]"
         cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
 
@@ -824,6 +925,8 @@ class RecorderTuningManager:
                 len(entity_ids),
                 cutoff.strftime("%Y-%m-%d %H:%M UTC"),
             )
+            for line in _rule_config_lines(rule):
+                _LOGGER.info("recorder_tuning: %s   %s", prefix, line)
             return
 
         total_rows = sum(cnt for cnt, _ in results.values())
@@ -838,21 +941,11 @@ class RecorderTuningManager:
             cutoff.strftime("%Y-%m-%d %H:%M UTC"),
             total_rows,
         )
-        # In dry-run mode each per-entity line is emitted at INFO. Cap the
-        # visible lines so the log stays readable on large installations;
-        # the full list is still available at DEBUG.
-        sorted_results = sorted(results.items())
-        if dry_run and len(sorted_results) > _DRY_RUN_LOG_CAP:
-            visible = sorted_results[:_DRY_RUN_LOG_CAP]
-            hidden = sorted_results[_DRY_RUN_LOG_CAP:]
-        else:
-            visible = sorted_results
-            hidden = []
-
-        log_entity = _LOGGER.info if dry_run else _LOGGER.debug
-        for entity_id, (cnt, oldest_ts) in visible:
+        for line in _rule_config_lines(rule):
+            _LOGGER.info("recorder_tuning: %s   %s", prefix, line)
+        for entity_id, (cnt, oldest_ts) in sorted(results.items()):
             oldest = datetime.fromtimestamp(oldest_ts, tz=timezone.utc)
-            log_entity(
+            _LOGGER.info(
                 "recorder_tuning: %s   %-60s  %6d rows  %s → %s",
                 prefix,
                 entity_id,
@@ -860,24 +953,6 @@ class RecorderTuningManager:
                 oldest.strftime("%Y-%m-%d %H:%M UTC"),
                 cutoff.strftime("%Y-%m-%d %H:%M UTC"),
             )
-        if hidden:
-            hidden_rows = sum(cnt for _, (cnt, _) in hidden)
-            _LOGGER.info(
-                "recorder_tuning: %s   …and %d more entities (%d rows) — see DEBUG log",
-                prefix,
-                len(hidden),
-                hidden_rows,
-            )
-            for entity_id, (cnt, oldest_ts) in hidden:
-                oldest = datetime.fromtimestamp(oldest_ts, tz=timezone.utc)
-                _LOGGER.debug(
-                    "recorder_tuning: %s   %-60s  %6d rows  %s → %s",
-                    prefix,
-                    entity_id,
-                    cnt,
-                    oldest.strftime("%Y-%m-%d %H:%M UTC"),
-                    cutoff.strftime("%Y-%m-%d %H:%M UTC"),
-                )
 
     def _resolve_entities(
         self,
