@@ -388,6 +388,320 @@ async def test_recorder_purge_cadence_off_day_sends_repack_false(freezer):
     assert calls[0].args[2] == {"repack": False}
 
 
+# ---------------------------------------------------------------------------
+# run_purge_now service: rule_names filtering
+# ---------------------------------------------------------------------------
+
+
+def _make_manager_with_rules(rules: list[dict], **config_overrides):
+    """Like _make_manager_with_config but seeds the manager with actual rules."""
+    from custom_components.recorder_tuning import RecorderTuningManager
+    from custom_components.recorder_tuning.const import (
+        CONF_ENTITY_IDS,
+        CONF_KEEP_DAYS,
+        CONF_RULE_NAME,
+    )
+
+    full_rules: list[dict] = []
+    for r in rules:
+        full_rules.append(
+            {
+                CONF_RULE_NAME: r["name"],
+                CONF_ENTITY_IDS: r.get("entity_ids", []),
+                CONF_KEEP_DAYS: r.get("keep_days", 7),
+                "integration_filter": [],
+                "device_ids": [],
+                "entity_globs": [],
+                "entity_regex_include": [],
+                "entity_regex_exclude": [],
+                "enabled": True,
+                "match_mode": "all",
+                "dry_run": None,
+            }
+        )
+
+    hass = MagicMock()
+    hass.services.async_call = AsyncMock()
+    config = {
+        "purge_time": "03:00",
+        "dry_run": False,
+        "rules": full_rules,
+        "run_recorder_purge": True,
+        "recorder_purge_repack": False,
+        "auto_repack": "never",
+        **config_overrides,
+    }
+    return hass, RecorderTuningManager(hass, config)
+
+
+@pytest.mark.asyncio
+async def test_run_purge_now_rule_names_filters_rules():
+    """Only rules named in rule_names are executed."""
+    hass, manager = _make_manager_with_rules(
+        [
+            {"name": "rule_a", "entity_ids": ["sensor.a"]},
+            {"name": "rule_b", "entity_ids": ["sensor.b"]},
+            {"name": "rule_c", "entity_ids": ["sensor.c"]},
+        ]
+    )
+
+    call = MagicMock()
+    call.data = {"rule_names": ["rule_a", "rule_c"]}
+
+    with patch.object(
+        manager, "_resolve_entities", side_effect=lambda rule, reg: rule["entity_ids"]
+    ):
+        with patch.object(manager, "_log_purge_plan", new_callable=AsyncMock):
+            with patch(
+                "custom_components.recorder_tuning.er.async_get",
+                return_value=MagicMock(),
+            ):
+                await manager.async_run_purge_now(call)
+
+    purge_entity_calls = [
+        c
+        for c in hass.services.async_call.call_args_list
+        if c.args[:2] == ("recorder", "purge_entities")
+    ]
+    purged_entities = {
+        eid for call in purge_entity_calls for eid in call.args[2]["entity_id"]
+    }
+    assert purged_entities == {"sensor.a", "sensor.c"}
+
+
+@pytest.mark.asyncio
+async def test_run_purge_now_rule_names_match_is_case_insensitive():
+    """Rule names match regardless of case differences between call + config."""
+    hass, manager = _make_manager_with_rules(
+        [
+            {"name": "Frigate camera metrics", "entity_ids": ["sensor.a"]},
+            {"name": "ESPHome diagnostic sensors", "entity_ids": ["sensor.b"]},
+        ]
+    )
+
+    call = MagicMock()
+    # Mixed casing: one all-lower, one all-upper
+    call.data = {"rule_names": ["frigate camera metrics", "ESPHOME DIAGNOSTIC SENSORS"]}
+
+    with patch.object(
+        manager, "_resolve_entities", side_effect=lambda rule, reg: rule["entity_ids"]
+    ):
+        with patch.object(manager, "_log_purge_plan", new_callable=AsyncMock):
+            with patch(
+                "custom_components.recorder_tuning.er.async_get",
+                return_value=MagicMock(),
+            ):
+                await manager.async_run_purge_now(call)
+
+    purge_entity_calls = [
+        c
+        for c in hass.services.async_call.call_args_list
+        if c.args[:2] == ("recorder", "purge_entities")
+    ]
+    purged = {eid for call in purge_entity_calls for eid in call.args[2]["entity_id"]}
+    assert purged == {"sensor.a", "sensor.b"}
+
+
+@pytest.mark.asyncio
+async def test_run_purge_now_rule_names_skips_trailing_global_purge():
+    """Filtered runs must not trigger the trailing recorder.purge sweep."""
+    hass, manager = _make_manager_with_rules(
+        [{"name": "rule_a", "entity_ids": ["sensor.a"]}]
+    )
+
+    call = MagicMock()
+    call.data = {"rule_names": ["rule_a"]}
+
+    with patch.object(
+        manager, "_resolve_entities", side_effect=lambda rule, reg: rule["entity_ids"]
+    ):
+        with patch.object(manager, "_log_purge_plan", new_callable=AsyncMock):
+            with patch(
+                "custom_components.recorder_tuning.er.async_get",
+                return_value=MagicMock(),
+            ):
+                await manager.async_run_purge_now(call)
+
+    purge_calls = [
+        c
+        for c in hass.services.async_call.call_args_list
+        if c.args[:2] == ("recorder", "purge")
+    ]
+    assert purge_calls == []
+
+
+@pytest.mark.asyncio
+async def test_run_purge_now_default_skips_trailing_purge():
+    """Default (no args) must NOT trigger the global recorder.purge."""
+    hass, manager = _make_manager_with_rules(
+        [{"name": "rule_a", "entity_ids": ["sensor.a"]}]
+    )
+
+    call = MagicMock()
+    call.data = {}
+
+    with patch.object(
+        manager, "_resolve_entities", side_effect=lambda rule, reg: rule["entity_ids"]
+    ):
+        with patch.object(manager, "_log_purge_plan", new_callable=AsyncMock):
+            with patch(
+                "custom_components.recorder_tuning.er.async_get",
+                return_value=MagicMock(),
+            ):
+                await manager.async_run_purge_now(call)
+
+    purge_calls = [
+        c
+        for c in hass.services.async_call.call_args_list
+        if c.args[:2] == ("recorder", "purge")
+    ]
+    assert purge_calls == []
+
+
+@pytest.mark.asyncio
+async def test_run_purge_now_explicit_opt_in_runs_trailing_purge():
+    """run_recorder_purge: true opts into the global sweep on a manual call."""
+    hass, manager = _make_manager_with_rules(
+        [{"name": "rule_a", "entity_ids": ["sensor.a"]}]
+    )
+
+    call = MagicMock()
+    call.data = {"run_recorder_purge": True}
+
+    with patch.object(
+        manager, "_resolve_entities", side_effect=lambda rule, reg: rule["entity_ids"]
+    ):
+        with patch.object(manager, "_log_purge_plan", new_callable=AsyncMock):
+            with patch(
+                "custom_components.recorder_tuning.er.async_get",
+                return_value=MagicMock(),
+            ):
+                await manager.async_run_purge_now(call)
+
+    purge_calls = [
+        c
+        for c in hass.services.async_call.call_args_list
+        if c.args[:2] == ("recorder", "purge")
+    ]
+    assert len(purge_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_purge_now_rule_names_overrides_explicit_opt_in():
+    """rule_names forces-skip even if run_recorder_purge: true is also passed."""
+    hass, manager = _make_manager_with_rules(
+        [{"name": "rule_a", "entity_ids": ["sensor.a"]}]
+    )
+
+    call = MagicMock()
+    call.data = {"rule_names": ["rule_a"], "run_recorder_purge": True}
+
+    with patch.object(
+        manager, "_resolve_entities", side_effect=lambda rule, reg: rule["entity_ids"]
+    ):
+        with patch.object(manager, "_log_purge_plan", new_callable=AsyncMock):
+            with patch(
+                "custom_components.recorder_tuning.er.async_get",
+                return_value=MagicMock(),
+            ):
+                await manager.async_run_purge_now(call)
+
+    purge_calls = [
+        c
+        for c in hass.services.async_call.call_args_list
+        if c.args[:2] == ("recorder", "purge")
+    ]
+    assert purge_calls == []
+
+
+@pytest.mark.asyncio
+async def test_scheduled_run_still_triggers_trailing_purge():
+    """The scheduled nightly path is unaffected by the service-call default flip."""
+    hass, manager = _make_manager_with_rules(
+        [{"name": "rule_a", "entity_ids": ["sensor.a"]}]
+    )
+
+    with patch.object(
+        manager, "_resolve_entities", side_effect=lambda rule, reg: rule["entity_ids"]
+    ):
+        with patch.object(manager, "_log_purge_plan", new_callable=AsyncMock):
+            with patch(
+                "custom_components.recorder_tuning.er.async_get",
+                return_value=MagicMock(),
+            ):
+                # Simulate the scheduled firing path — _async_run_purge.
+                from datetime import datetime
+
+                await manager._async_run_purge(datetime.now())
+
+    purge_calls = [
+        c
+        for c in hass.services.async_call.call_args_list
+        if c.args[:2] == ("recorder", "purge")
+    ]
+    assert len(purge_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_purge_now_unknown_rule_names_warn_not_abort(caplog):
+    """Unknown names log a WARNING but the matching rules still run."""
+    import logging
+
+    hass, manager = _make_manager_with_rules(
+        [
+            {"name": "rule_a", "entity_ids": ["sensor.a"]},
+            {"name": "rule_b", "entity_ids": ["sensor.b"]},
+        ]
+    )
+
+    call = MagicMock()
+    call.data = {"rule_names": ["rule_a", "typo_rule"]}
+    caplog.set_level(logging.WARNING)
+
+    with patch.object(
+        manager, "_resolve_entities", side_effect=lambda rule, reg: rule["entity_ids"]
+    ):
+        with patch.object(manager, "_log_purge_plan", new_callable=AsyncMock):
+            with patch(
+                "custom_components.recorder_tuning.er.async_get",
+                return_value=MagicMock(),
+            ):
+                await manager.async_run_purge_now(call)
+
+    assert any("unknown rule name" in r.message for r in caplog.records)
+
+    purge_entity_calls = [
+        c
+        for c in hass.services.async_call.call_args_list
+        if c.args[:2] == ("recorder", "purge_entities")
+    ]
+    purged = {eid for call in purge_entity_calls for eid in call.args[2]["entity_id"]}
+    assert purged == {"sensor.a"}
+
+
+@pytest.mark.asyncio
+async def test_run_purge_now_all_rule_names_unknown_is_noop(caplog):
+    """If every requested name is unknown, the call is a no-op (logs warning)."""
+    import logging
+
+    hass, manager = _make_manager_with_rules(
+        [{"name": "rule_a", "entity_ids": ["sensor.a"]}]
+    )
+
+    call = MagicMock()
+    call.data = {"rule_names": ["typo_a", "typo_b"]}
+    caplog.set_level(logging.WARNING)
+
+    with patch(
+        "custom_components.recorder_tuning.er.async_get", return_value=MagicMock()
+    ):
+        await manager.async_run_purge_now(call)
+
+    # No purge_entities, no global purge
+    assert hass.services.async_call.call_args_list == []
+    assert any("nothing to do" in r.message for r in caplog.records)
+
+
 @pytest.mark.asyncio
 async def test_recorder_purge_failure_is_logged_not_raised(caplog):
     """If recorder.purge raises, log the error and continue (don't bubble up)."""

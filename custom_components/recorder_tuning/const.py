@@ -38,6 +38,12 @@ DEFAULT_DRY_RUN = True
 # Dry-run mode
 CONF_DRY_RUN = "dry_run"
 
+# ``run_purge_now`` service parameter: optional list of rule names to restrict
+# the run to. When provided, only matching rules are executed AND the trailing
+# global ``recorder.purge`` call is skipped (targeted runs are usually about
+# testing specific rules, not the global sweep).
+CONF_RULE_NAMES = "rule_names"
+
 # After per-entity rules finish, optionally call HA's ``recorder.purge``
 # service so the global ``purge_keep_days`` sweeps whatever the rules don't
 # cover AND the short-term stats monkey-patch gets a chance to fire.

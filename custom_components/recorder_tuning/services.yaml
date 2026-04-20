@@ -1,18 +1,45 @@
 run_purge_now:
   name: Run Purge Now
   description: >-
-    Immediately execute all enabled purge rules without waiting for the
-    scheduled time. Pass dry_run: true to log what would be deleted without
-    actually removing any data.
+    Immediately execute enabled purge rules without waiting for the scheduled
+    time. Runs the per-entity rules only; the trailing global recorder.purge is
+    NOT triggered by default (unlike the scheduled nightly run). Pass
+    run_recorder_purge: true to include it.
   fields:
     dry_run:
       name: Dry Run
       description: >-
         When true, logs the entity name, row count, and date range of data that
         would be deleted for each rule — without deleting anything. When
-        omitted, inherits the dry_run setting from configuration.yaml, so the
-        service call behaves identically to the scheduled nightly run.
+        omitted, inherits the dry_run setting from configuration.yaml.
       required: false
+      example: true
+      selector:
+        boolean:
+    rule_names:
+      name: Rule Names
+      description: >-
+        Optional list of rule names to run (matched against each rule's
+        `name:`). Unknown names are logged as a warning but do not abort the
+        call. When provided, the trailing global recorder.purge step is always
+        skipped — use this to test one or two rules in isolation.
+      required: false
+      example:
+        - Frigate camera metrics
+      selector:
+        text:
+          multiple: true
+    run_recorder_purge:
+      name: Include Global Recorder Purge
+      description: >-
+        When true, also trigger HA's recorder.purge after the rules run — this
+        matches the scheduled nightly flow (global states prune, short-term
+        stats prune via the monkey-patch, and optional repack). Default false
+        because the global purge can take minutes. Ignored when rule_names is
+        provided.
+      required: false
+      example: false
+      default: false
       selector:
         boolean:
 
