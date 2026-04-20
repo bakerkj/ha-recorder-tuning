@@ -694,6 +694,17 @@ class RecorderTuningManager:
         """Persist rules to storage."""
         await self.store.async_save({CONF_RULES: self.rules})
 
+    async def async_replace_rules(self, rules: list[dict]) -> None:
+        """Atomically replace the in-memory rule set and persist it.
+
+        Called by the options flow when the user adds, edits, or removes a
+        rule through the UI. Keeps persistence and in-memory state on the
+        manager side so the options flow never has to poke at ``self.store``
+        or mutate ``self.rules`` directly.
+        """
+        self.rules = list(rules)
+        await self._save_rules()
+
     async def async_reload(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         """Handle config entry updates (schedule change, stats_keep_days change)."""
         self._schedule_purge()

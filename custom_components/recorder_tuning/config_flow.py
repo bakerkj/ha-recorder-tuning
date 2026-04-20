@@ -369,11 +369,10 @@ class RecorderTuningOptionsFlow(config_entries.OptionsFlow):
     # ------------------------------------------------------------------ #
 
     async def _save_rules(self) -> None:
-        """Persist rules via the live manager's store and update its in-memory list."""
+        """Persist rules through the live manager, or storage as a fallback."""
         manager = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
         if manager is not None:
-            await manager.store.async_save({CONF_RULES: self._rules})
-            manager.rules = list(self._rules)
+            await manager.async_replace_rules(self._rules)
         else:
             # Fallback: manager not loaded (shouldn't occur during a live options flow)
             store = storage.Store(self.hass, STORAGE_VERSION, STORAGE_KEY)
