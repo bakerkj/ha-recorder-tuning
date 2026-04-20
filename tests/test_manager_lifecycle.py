@@ -353,6 +353,187 @@ def test_update_config_clears_zero_match_suppression():
 
 
 # ---------------------------------------------------------------------------
+# Dry-run summary on setup/reload
+# ---------------------------------------------------------------------------
+
+
+def test_dry_run_summary_top_level_locked(caplog):
+    """Top-level dry_run: true → safety-lock summary, no per-rule breakdown."""
+    import logging
+
+    _, manager = _make_manager_with_full_config(
+        [_make_rule("a", dry_run=False), _make_rule("b", dry_run=True)],
+        top_dry_run=True,
+    )
+    caplog.set_level(logging.INFO)
+    manager._log_dry_run_summary()
+
+    msgs = [r.message for r in caplog.records]
+    assert any(
+        "top-level dry_run: true" in m and "all 2 enabled rule(s)" in m for m in msgs
+    )
+    # No aggregate LIVE/DRY breakdown when the lock is in effect
+    assert not any("dry-run summary" in m for m in msgs)
+
+
+def test_dry_run_summary_all_dry(caplog):
+    """All rules dry (top=false, per-rule=true) → summary shows 0 LIVE, N DRY."""
+    import logging
+
+    _, manager = _make_manager_with_full_config(
+        [_make_rule("a", dry_run=True), _make_rule("b", dry_run=True)]
+    )
+    caplog.set_level(logging.INFO)
+    manager._log_dry_run_summary()
+
+    msgs = [r.message for r in caplog.records]
+    assert any(
+        "dry-run summary" in m and "0 rule(s) LIVE" in m and "2 rule(s) DRY RUN" in m
+        for m in msgs
+    )
+    # No minority list when one side is empty
+    assert not any(m.startswith("recorder_tuning:   [") for m in msgs)
+
+
+def test_dry_run_summary_all_live(caplog):
+    """All rules live (top=false, per-rule=false) → summary shows N LIVE, 0 DRY."""
+    import logging
+
+    _, manager = _make_manager_with_full_config(
+        [_make_rule("a", dry_run=False), _make_rule("b", dry_run=False)]
+    )
+    caplog.set_level(logging.INFO)
+    manager._log_dry_run_summary()
+
+    msgs = [r.message for r in caplog.records]
+    assert any(
+        "dry-run summary" in m and "2 rule(s) LIVE" in m and "0 rule(s) DRY RUN" in m
+        for m in msgs
+    )
+    assert not any(m.startswith("recorder_tuning:   [") for m in msgs)
+
+
+def test_dry_run_summary_mixed_lists_live_minority(caplog):
+    """Mixed with fewer LIVE than DRY → minority list labelled [LIVE] by name."""
+    import logging
+
+    rules = [
+        _make_rule("alpha", dry_run=True),
+        _make_rule("beta", dry_run=True),
+        _make_rule("gamma", dry_run=False),  # minority
+    ]
+    _, manager = _make_manager_with_full_config(rules)
+    caplog.set_level(logging.INFO)
+    manager._log_dry_run_summary()
+
+    msgs = [r.message for r in caplog.records]
+    assert any(
+        "dry-run summary" in m and "1 rule(s) LIVE" in m and "2 rule(s) DRY RUN" in m
+        for m in msgs
+    )
+    assert any("[LIVE] gamma" in m for m in msgs)
+    # Majority (DRY) members should not be listed
+    assert not any("[DRY RUN] alpha" in m for m in msgs)
+    assert not any("[DRY RUN] beta" in m for m in msgs)
+
+
+def test_dry_run_summary_mixed_lists_dry_minority(caplog):
+    """Mixed with fewer DRY than LIVE → minority list labelled [DRY RUN]."""
+    import logging
+
+    rules = [
+        _make_rule("alpha", dry_run=False),
+        _make_rule("beta", dry_run=False),
+        _make_rule("gamma", dry_run=True),  # minority
+    ]
+    _, manager = _make_manager_with_full_config(rules)
+    caplog.set_level(logging.INFO)
+    manager._log_dry_run_summary()
+
+    msgs = [r.message for r in caplog.records]
+    assert any(
+        "dry-run summary" in m and "2 rule(s) LIVE" in m and "1 rule(s) DRY RUN" in m
+        for m in msgs
+    )
+    assert any("[DRY RUN] gamma" in m for m in msgs)
+    assert not any("[LIVE] alpha" in m for m in msgs)
+
+
+def test_dry_run_summary_tie_prefers_live(caplog):
+    """Equal split → LIVE list printed (documented tie-break)."""
+    import logging
+
+    rules = [
+        _make_rule("alpha", dry_run=False),
+        _make_rule("beta", dry_run=True),
+    ]
+    _, manager = _make_manager_with_full_config(rules)
+    caplog.set_level(logging.INFO)
+    manager._log_dry_run_summary()
+
+    msgs = [r.message for r in caplog.records]
+    assert any("[LIVE] alpha" in m for m in msgs)
+    assert not any("[DRY RUN] beta" in m for m in msgs)
+
+
+def test_dry_run_summary_skips_disabled_rules(caplog):
+    """Disabled rules must not appear in counts or minority list."""
+    import logging
+
+    rules = [
+        _make_rule("enabled_live", dry_run=False),
+        _make_rule("disabled_live", dry_run=False),
+    ]
+    rules[1]["enabled"] = False
+    _, manager = _make_manager_with_full_config(rules)
+    caplog.set_level(logging.INFO)
+    manager._log_dry_run_summary()
+
+    msgs = [r.message for r in caplog.records]
+    assert any(
+        "dry-run summary" in m and "1 rule(s) LIVE" in m and "0 rule(s) DRY RUN" in m
+        for m in msgs
+    )
+    assert not any("disabled_live" in m for m in msgs)
+
+
+def test_dry_run_summary_minority_list_capped(caplog):
+    """Minority list longer than _DRY_RUN_LOG_CAP shows cap + overflow line."""
+    import logging
+
+    from custom_components.recorder_tuning import _DRY_RUN_LOG_CAP
+
+    # Majority LIVE so DRY becomes the minority; make DRY bigger than the cap.
+    minority_size = _DRY_RUN_LOG_CAP + 3
+    dry_rules = [_make_rule(f"dry_{i:03d}", dry_run=True) for i in range(minority_size)]
+    live_rules = [
+        _make_rule(f"live_{i:03d}", dry_run=False)
+        for i in range(minority_size + 10)  # clearly majority
+    ]
+    _, manager = _make_manager_with_full_config(dry_rules + live_rules)
+    caplog.set_level(logging.INFO)
+    manager._log_dry_run_summary()
+
+    msgs = [r.message for r in caplog.records]
+    dry_lines = [m for m in msgs if "[DRY RUN]" in m and "dry_" in m]
+    assert len(dry_lines) == _DRY_RUN_LOG_CAP
+    assert any(f"…and {minority_size - _DRY_RUN_LOG_CAP} more" in m for m in msgs)
+
+
+def test_dry_run_summary_empty_ruleset_logs_nothing(caplog):
+    """Empty rule list (top=false) → no summary emitted."""
+    import logging
+
+    _, manager = _make_manager_with_full_config([])
+    caplog.set_level(logging.INFO)
+    manager._log_dry_run_summary()
+
+    msgs = [r.message for r in caplog.records]
+    assert not any("dry-run summary" in m for m in msgs)
+    assert not any("locked to DRY RUN" in m for m in msgs)
+
+
+# ---------------------------------------------------------------------------
 # Trailing recorder.purge call
 # ---------------------------------------------------------------------------
 
