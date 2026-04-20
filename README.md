@@ -109,7 +109,10 @@ rules:
 ```
 
 After editing the file, call `recorder_tuning.reload` to hot-swap the rules
-without restarting Home Assistant.
+without restarting Home Assistant. The integration does **not** watch the file
+for changes — edits only take effect once you fire the reload service (or
+restart HA). If the reload surfaces a parse / schema error, the previous rule
+set is preserved.
 
 ### Rule matching
 

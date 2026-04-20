@@ -95,12 +95,13 @@ _RULE_SCHEMA = vol.Schema(
 )
 
 
-def _parse_hhmm(value: str) -> time:
+def parse_hhmm(value: str) -> time:
     """Parse a ``HH:MM`` string into a ``time`` object.
 
-    Raises ``ValueError`` (or ``TypeError`` if ``value`` isn't a string) on
-    malformed input — callers decide whether to treat that as a validation
-    failure (config flow) or a warning plus default (scheduler).
+    Shared between the config flow (wraps ``ValueError`` into ``vol.Invalid``
+    for form validation) and the scheduler (logs a warning and falls back to
+    the default). No leading underscore because this is consumed across
+    module boundaries within the package.
     """
     return datetime.strptime(value, "%H:%M").time()
 
@@ -192,6 +193,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     stats_keep_days = entry.data.get(CONF_STATS_KEEP_DAYS, DEFAULT_STATS_KEEP_DAYS)
     _apply_stats_patch(hass, stats_keep_days)
 
+    yaml_path = hass.config.path(YAML_CONFIG_FILE)
+    file_exists = await hass.async_add_executor_job(os.path.isfile, yaml_path)
     try:
         yaml_rules = await hass.async_add_executor_job(_load_yaml_rules, hass)
     except HomeAssistantError as err:
@@ -203,10 +206,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             err,
         )
         yaml_rules = []
-    if not yaml_rules:
+    # Only nudge the user about the file when it actually doesn't exist. An
+    # explicit ``rules: []`` is a legitimate "stats retention only" setup and
+    # shouldn't get the "create the file" hint.
+    if not file_exists:
         _LOGGER.info(
-            "recorder_tuning: no active rules. Edit %s in the config dir and "
-            "call recorder_tuning.reload to enable.",
+            "recorder_tuning: no %s in config dir — no purge rules active. "
+            "Create the file and call recorder_tuning.reload to enable.",
             YAML_CONFIG_FILE,
         )
 
@@ -434,14 +440,14 @@ class RecorderTuningManager:
             self._unsub_timer = None
 
         try:
-            purge_time = _parse_hhmm(purge_time_str)
+            purge_time = parse_hhmm(purge_time_str)
         except (TypeError, ValueError):
             _LOGGER.warning(
                 "recorder_tuning: invalid purge_time '%s', defaulting to %s",
                 purge_time_str,
                 DEFAULT_PURGE_TIME,
             )
-            purge_time = _parse_hhmm(DEFAULT_PURGE_TIME)
+            purge_time = parse_hhmm(DEFAULT_PURGE_TIME)
 
         self._unsub_timer = async_track_time_change(
             self.hass,

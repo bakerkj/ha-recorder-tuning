@@ -14,7 +14,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
 
-from . import _parse_hhmm
+from . import parse_hhmm
 from .const import (
     CONF_DRY_RUN,
     CONF_PURGE_TIME,
@@ -29,7 +29,7 @@ from .const import (
 def _valid_time(value: str) -> str:
     """Validate HH:MM time string and return it zero-padded."""
     try:
-        parsed = _parse_hhmm(value)
+        parsed = parse_hhmm(value)
     except (TypeError, ValueError) as err:
         raise vol.Invalid("Time must be in HH:MM format, e.g. 03:00") from err
     return parsed.strftime("%H:%M")
