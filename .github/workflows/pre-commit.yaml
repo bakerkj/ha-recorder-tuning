@@ -19,3 +19,7 @@ jobs:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
       - run: uv sync --group lint && uv run pre-commit run --all-files
+        env:
+          # no-commit-to-branch is a developer-side safety net; CI legitimately
+          # runs against master on push events, so skip it here.
+          SKIP: no-commit-to-branch
