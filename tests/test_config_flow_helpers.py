@@ -11,6 +11,7 @@ from custom_components.recorder_tuning.config_flow import (
     _validate_rule_input,
 )
 from custom_components.recorder_tuning.const import (
+    CONF_DEVICE_IDS,
     CONF_ENABLED,
     CONF_ENTITY_GLOBS,
     CONF_ENTITY_IDS,
@@ -219,7 +220,3 @@ def test_build_rule_survives_validate():
         CONF_ENABLED: rule[CONF_ENABLED],
     }
     assert _validate_rule_input(roundtrip) == {}
-
-
-# Missing import — add at top so the test file compiles cleanly
-from custom_components.recorder_tuning.const import CONF_DEVICE_IDS  # noqa: E402
