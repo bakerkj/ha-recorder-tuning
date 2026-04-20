@@ -20,10 +20,6 @@ from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
-    AUTO_REPACK_MONTHLY,
-    AUTO_REPACK_NEVER,
-    AUTO_REPACK_WEEKLY,
-    CONF_AUTO_REPACK,
     CONF_DEVICE_IDS,
     CONF_DRY_RUN,
     DEFAULT_DRY_RUN,
@@ -32,25 +28,30 @@ from .const import (
     CONF_ENTITY_IDS,
     CONF_ENTITY_REGEX_EXCLUDE,
     CONF_ENTITY_REGEX_INCLUDE,
+    CONF_HA_RECORDER_PURGE,
+    CONF_HA_RECORDER_PURGE_ENABLED,
+    CONF_HA_RECORDER_PURGE_FORCE_REPACK,
+    CONF_HA_RECORDER_PURGE_REPACK,
     CONF_INTEGRATION_FILTER,
     CONF_KEEP_DAYS,
     CONF_MATCH_MODE,
     CONF_PURGE_TIME,
-    CONF_RECORDER_PURGE_REPACK,
     CONF_RULE_NAME,
     CONF_RULE_NAMES,
     CONF_RULES,
-    CONF_RUN_RECORDER_PURGE,
     CONF_STATS_KEEP_DAYS,
-    DEFAULT_AUTO_REPACK,
+    DEFAULT_HA_RECORDER_PURGE_ENABLED,
+    DEFAULT_HA_RECORDER_PURGE_FORCE_REPACK,
+    DEFAULT_HA_RECORDER_PURGE_REPACK,
     DEFAULT_MATCH_MODE,
     DEFAULT_PURGE_TIME,
-    DEFAULT_RECORDER_PURGE_REPACK,
-    DEFAULT_RUN_RECORDER_PURGE,
     DEFAULT_STATS_KEEP_DAYS,
     DOMAIN,
     MATCH_MODE_ALL,
     MATCH_MODE_ANY,
+    REPACK_MONTHLY,
+    REPACK_NEVER,
+    REPACK_WEEKLY,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -96,11 +97,13 @@ def parse_hhmm(value: str) -> time:
     return datetime.strptime(value, "%H:%M").time()
 
 
-def _should_repack_today(now: datetime, auto_repack: str, force_repack: bool) -> bool:
+def _should_repack_today(
+    now: datetime, repack_cadence: str, force_repack: bool
+) -> bool:
     """Return True if this run should pass ``repack=True`` to ``recorder.purge``.
 
-    ``force_repack`` (``recorder_purge_repack: true``) is the explicit override
-    and wins over the cadence. Otherwise the cadence is one of:
+    ``force_repack`` (``ha_recorder_purge.force_repack: true``) is the explicit
+    override and wins over the cadence. Otherwise the cadence is one of:
 
     - ``never``    → no scheduled repack
     - ``weekly``   → every Sunday
@@ -109,12 +112,12 @@ def _should_repack_today(now: datetime, auto_repack: str, force_repack: bool) ->
     """
     if force_repack:
         return True
-    if auto_repack == AUTO_REPACK_NEVER:
+    if repack_cadence == REPACK_NEVER:
         return False
-    if auto_repack == AUTO_REPACK_WEEKLY:
+    if repack_cadence == REPACK_WEEKLY:
         # weekday(): Monday=0 .. Sunday=6
         return now.weekday() == 6
-    if auto_repack == AUTO_REPACK_MONTHLY:
+    if repack_cadence == REPACK_MONTHLY:
         # Reuse HA's own predicate so cadence changes upstream carry over.
         from homeassistant.components.recorder.util import is_second_sunday  # noqa: PLC0415
 
@@ -155,6 +158,28 @@ _RULE_SCHEMA = vol.Schema(
 )
 
 
+# Sub-schema for the ha_recorder_purge: block (see const.py for field docs).
+_HA_RECORDER_PURGE_SCHEMA = vol.Schema(
+    {
+        vol.Optional(
+            CONF_HA_RECORDER_PURGE_ENABLED,
+            default=DEFAULT_HA_RECORDER_PURGE_ENABLED,
+        ): bool,
+        vol.Optional(
+            CONF_HA_RECORDER_PURGE_REPACK,
+            default=DEFAULT_HA_RECORDER_PURGE_REPACK,
+        ): vol.In([REPACK_NEVER, REPACK_WEEKLY, REPACK_MONTHLY]),
+        vol.Optional(
+            CONF_HA_RECORDER_PURGE_FORCE_REPACK,
+            default=DEFAULT_HA_RECORDER_PURGE_FORCE_REPACK,
+        ): bool,
+    }
+)
+
+# Default that gets filled when the user omits ``ha_recorder_purge:`` entirely.
+_DEFAULT_HA_RECORDER_PURGE = _HA_RECORDER_PURGE_SCHEMA({})
+
+
 # Top-level schema: recorder_tuning: block in configuration.yaml. Rules can
 # be supplied inline or via !include — HA's YAML loader resolves !include
 # before we ever see the dict.
@@ -170,15 +195,8 @@ CONFIG_SCHEMA = vol.Schema(
                 ): vol.All(int, vol.Range(min=1, max=365)),
                 vol.Optional(CONF_DRY_RUN, default=DEFAULT_DRY_RUN): bool,
                 vol.Optional(
-                    CONF_RUN_RECORDER_PURGE, default=DEFAULT_RUN_RECORDER_PURGE
-                ): bool,
-                vol.Optional(
-                    CONF_RECORDER_PURGE_REPACK,
-                    default=DEFAULT_RECORDER_PURGE_REPACK,
-                ): bool,
-                vol.Optional(CONF_AUTO_REPACK, default=DEFAULT_AUTO_REPACK): vol.In(
-                    [AUTO_REPACK_NEVER, AUTO_REPACK_WEEKLY, AUTO_REPACK_MONTHLY]
-                ),
+                    CONF_HA_RECORDER_PURGE, default=_DEFAULT_HA_RECORDER_PURGE
+                ): _HA_RECORDER_PURGE_SCHEMA,
                 vol.Optional(CONF_RULES, default=[]): [_RULE_SCHEMA],
             }
         )
@@ -217,7 +235,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             {
                 vol.Optional(CONF_DRY_RUN): bool,
                 vol.Optional(CONF_RULE_NAMES): vol.All([str], vol.Length(min=1)),
-                vol.Optional(CONF_RUN_RECORDER_PURGE): bool,
+                vol.Optional(CONF_HA_RECORDER_PURGE): bool,
             }
         ),
     )
@@ -488,7 +506,7 @@ class RecorderTuningManager:
         Unlike the scheduled nightly run, the trailing global ``recorder.purge``
         call is **skipped by default** on a manual invocation — the common use
         case is testing one or more rules, and the global sweep is slow enough
-        to be surprising when triggered by hand. Pass ``run_recorder_purge:
+        to be surprising when triggered by hand. Pass ``ha_recorder_purge:
         true`` to opt into the full nightly flow. ``rule_names`` always
         implies-skip regardless.
         """
@@ -500,7 +518,7 @@ class RecorderTuningManager:
         requested_names = call.data.get(CONF_RULE_NAMES)
         rules_arg: list[dict] | None = None
         # Manual-run default: skip the global recorder.purge. rule_names and
-        # the explicit opt-in ``run_recorder_purge`` both flow through this
+        # the explicit opt-in ``ha_recorder_purge`` both flow through this
         # single variable so _execute_all_rules sees exactly what to do.
         trailing_arg: bool = False
 
@@ -538,7 +556,7 @@ class RecorderTuningManager:
         else:
             # Explicit opt-in to the global sweep — only honoured when no
             # rule_names filter is present.
-            trailing_arg = bool(call.data.get(CONF_RUN_RECORDER_PURGE, False))
+            trailing_arg = bool(call.data.get(CONF_HA_RECORDER_PURGE, False))
             if dry_run:
                 _LOGGER.info(
                     "recorder_tuning: dry-run triggered via service — no data will be deleted%s",
@@ -568,10 +586,10 @@ class RecorderTuningManager:
         ``rules`` — if provided, iterate this list instead of ``self.rules``.
         The service handler uses this for ``rule_names``-filtered runs.
 
-        ``run_trailing_purge`` — if None, defer to ``run_recorder_purge`` in
-        config. If explicitly False, skip the trailing global ``recorder.purge``
-        call (used by ``rule_names``-filtered runs so targeted debugging
-        doesn't trigger the global sweep).
+        ``run_trailing_purge`` — if None, defer to
+        ``ha_recorder_purge.enabled`` in config. If explicitly False, skip the
+        trailing global ``recorder.purge`` call (used by ``rule_names``-filtered
+        runs so targeted debugging doesn't trigger the global sweep).
         """
         ent_reg = er.async_get(self.hass)
         active_rules = self.rules if rules is None else rules
@@ -645,17 +663,25 @@ class RecorderTuningManager:
         # the short-term stats monkey-patch fires. Intended to replace HA's
         # auto_purge (set auto_purge: false on the recorder).  Caller can
         # force-skip via run_trailing_purge=False (used by rule_names runs).
+        ha_purge_cfg = self.config.get(
+            CONF_HA_RECORDER_PURGE, _DEFAULT_HA_RECORDER_PURGE
+        )
         do_trailing = (
-            self.config.get(CONF_RUN_RECORDER_PURGE, DEFAULT_RUN_RECORDER_PURGE)
+            ha_purge_cfg.get(
+                CONF_HA_RECORDER_PURGE_ENABLED, DEFAULT_HA_RECORDER_PURGE_ENABLED
+            )
             if run_trailing_purge is None
             else run_trailing_purge
         )
         if do_trailing:
             repack = _should_repack_today(
                 datetime.now(),
-                self.config.get(CONF_AUTO_REPACK, DEFAULT_AUTO_REPACK),
-                self.config.get(
-                    CONF_RECORDER_PURGE_REPACK, DEFAULT_RECORDER_PURGE_REPACK
+                ha_purge_cfg.get(
+                    CONF_HA_RECORDER_PURGE_REPACK, DEFAULT_HA_RECORDER_PURGE_REPACK
+                ),
+                ha_purge_cfg.get(
+                    CONF_HA_RECORDER_PURGE_FORCE_REPACK,
+                    DEFAULT_HA_RECORDER_PURGE_FORCE_REPACK,
                 ),
             )
             if dry_run:

@@ -33,9 +33,12 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
 
 from custom_components.recorder_tuning.const import (
     CONF_DRY_RUN,
+    CONF_HA_RECORDER_PURGE,
+    CONF_HA_RECORDER_PURGE_ENABLED,
+    CONF_HA_RECORDER_PURGE_FORCE_REPACK,
+    CONF_HA_RECORDER_PURGE_REPACK,
     CONF_PURGE_TIME,
     CONF_RULES,
-    CONF_RUN_RECORDER_PURGE,
     CONF_STATS_KEEP_DAYS,
     DOMAIN,
 )
@@ -125,8 +128,12 @@ async def integration_entry(
             CONF_DRY_RUN: False,  # tests that call run_purge_now expect live purges
             # Most tests isolate per-entity-rule behavior from the trailing
             # global recorder.purge; the tests that need to observe that
-            # trailing call flip it back on explicitly.
-            CONF_RUN_RECORDER_PURGE: False,
+            # trailing call flip enabled back on explicitly.
+            CONF_HA_RECORDER_PURGE: {
+                CONF_HA_RECORDER_PURGE_ENABLED: False,
+                CONF_HA_RECORDER_PURGE_REPACK: "never",
+                CONF_HA_RECORDER_PURGE_FORCE_REPACK: False,
+            },
             CONF_RULES: [],
         }
     }

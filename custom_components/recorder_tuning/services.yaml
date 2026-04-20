@@ -4,7 +4,7 @@ run_purge_now:
     Immediately execute enabled purge rules without waiting for the scheduled
     time. Runs the per-entity rules only; the trailing global recorder.purge is
     NOT triggered by default (unlike the scheduled nightly run). Pass
-    run_recorder_purge: true to include it.
+    ha_recorder_purge: true to include it.
   fields:
     dry_run:
       name: Dry Run
@@ -29,8 +29,8 @@ run_purge_now:
       selector:
         text:
           multiple: true
-    run_recorder_purge:
-      name: Include Global Recorder Purge
+    ha_recorder_purge:
+      name: Include HA Recorder Purge
       description: >-
         When true, also trigger HA's recorder.purge after the rules run — this
         matches the scheduled nightly flow (global states prune, short-term

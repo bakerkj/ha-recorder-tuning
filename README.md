@@ -49,17 +49,19 @@ recorder_tuning:
   purge_time: "03:00"
   stats_keep_days: 60
   dry_run: true
-  # auto_repack: monthly   # default: second Sunday of the month (matches HA)
-  # Other cadences: "weekly" (every Sunday) or "never".
+  ha_recorder_purge:
+    enabled: true # call recorder.purge after our rules run (default true)
+    repack: monthly # cadence: never | weekly | monthly (HA's native 2nd Sunday)
+    force_repack: false # always-repack override; ignores cadence when true
   rules: !include recorder_tuning.yaml
 ```
 
 Setting `auto_purge: false` on the recorder is the recommended pairing: after
-recorder_tuning runs its rules at `purge_time`, it calls `recorder.purge`
-itself. That single trigger sweeps everything the rules don't cover (respecting
-`purge_keep_days`) and fires the short-term-stats patch. Leaving HA's own
-auto_purge on alongside works too — you just get two purges a day instead of
-one.
+recorder_tuning runs its rules at `purge_time`, it calls `recorder.purge` itself
+via the `ha_recorder_purge` block. That single trigger sweeps everything the
+rules don't cover (respecting `purge_keep_days`) and fires the short-term-stats
+patch. Leaving HA's own auto_purge on alongside works too — you just get two
+purges a day instead of one.
 
 ```yaml
 # recorder_tuning.yaml — the list of rules (no top-level wrapper key)
@@ -87,15 +89,21 @@ and the previous configuration is preserved.
 
 ### Top-level fields
 
-| Field                   | Type           | Default   | Description                                                                                                                                               |
-| ----------------------- | -------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `purge_time`            | `HH:MM` string | `03:00`   | Time of day to run the per-entity purge rules.                                                                                                            |
-| `stats_keep_days`       | int, 1-365     | `30`      | Days of 5-minute statistics to retain. Must be ≥ recorder's `purge_keep_days`.                                                                            |
-| `dry_run`               | bool           | `true`    | When true, every run logs what would be deleted without touching any data.                                                                                |
-| `run_recorder_purge`    | bool           | `true`    | After per-entity rules finish, call HA's `recorder.purge` so the global `purge_keep_days` sweeps uncovered entities and the short-term-stats patch fires. |
-| `recorder_purge_repack` | bool           | `false`   | Force a repack on every purge run (expensive). Overrides `auto_repack` when true. Leave off unless you know you want it.                                  |
-| `auto_repack`           | enum           | `monthly` | Repack cadence when `recorder_purge_repack` is false. `monthly` = second Sunday of the month (HA default). Other values: `weekly` (Sundays) or `never`.   |
-| `rules`                 | list of rules  | `[]`      | Per-entity purge rules. Use `!include` to pull from a separate file (see example).                                                                        |
+| Field               | Type           | Default       | Description                                                                                                                        |
+| ------------------- | -------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `purge_time`        | `HH:MM` string | `03:00`       | Time of day to run the per-entity purge rules.                                                                                     |
+| `stats_keep_days`   | int, 1-365     | `30`          | Days of 5-minute statistics to retain. Must be ≥ recorder's `purge_keep_days`.                                                     |
+| `dry_run`           | bool           | `true`        | When true, every run logs what would be deleted without touching any data.                                                         |
+| `ha_recorder_purge` | block          | _(see below)_ | Controls the trailing global `recorder.purge` call that runs after the rules. Fields: `enabled`, `repack`, `force_repack` (below). |
+| `rules`             | list of rules  | `[]`          | Per-entity purge rules. Use `!include` to pull from a separate file (see example).                                                 |
+
+**`ha_recorder_purge` sub-fields:**
+
+| Field          | Type | Default   | Description                                                                                                                                               |
+| -------------- | ---- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`      | bool | `true`    | After per-entity rules finish, call HA's `recorder.purge` so the global `purge_keep_days` sweeps uncovered entities and the short-term-stats patch fires. |
+| `repack`       | enum | `monthly` | Repack cadence when `force_repack` is false. `monthly` = second Sunday of the month (HA native). Other values: `weekly` (Sundays) or `never`.             |
+| `force_repack` | bool | `false`   | Force a repack on every purge run (expensive). Overrides `repack` when true. Leave off unless you know you want it.                                       |
 
 ## Dry-Run Mode
 
@@ -185,11 +193,11 @@ Unlike the scheduled nightly run, the trailing global `recorder.purge` is
 rules, and the global sweep is slow enough to be surprising by hand. Pass
 `run_recorder_purge: true` to opt into the full nightly flow.
 
-| Parameter            | Type        | Default             | Description                                                                                                                                                                                             |
-| -------------------- | ----------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `dry_run`            | bool        | _(inherits config)_ | Override dry-run mode for this call only. Omit to use the configured setting.                                                                                                                           |
-| `rule_names`         | list of str | _(all rules)_       | Restrict the run to rules whose `name:` matches. Unknown names log a warning but don't abort. When provided, the trailing global `recorder.purge` is always skipped regardless of `run_recorder_purge`. |
-| `run_recorder_purge` | bool        | `false`             | Opt into the trailing global `recorder.purge` call after the rules run — matches the nightly flow. Ignored when `rule_names` is provided.                                                               |
+| Parameter           | Type        | Default             | Description                                                                                                                                                                                                        |
+| ------------------- | ----------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `dry_run`           | bool        | _(inherits config)_ | Override dry-run mode for this call only. Omit to use the configured setting.                                                                                                                                      |
+| `rule_names`        | list of str | _(all rules)_       | Restrict the run to rules whose `name:` matches (case-insensitive). Unknown names log a warning but don't abort. When provided, the trailing `recorder.purge` is always skipped regardless of `ha_recorder_purge`. |
+| `ha_recorder_purge` | bool        | `false`             | Opt into the trailing HA `recorder.purge` call after the rules run — matches the nightly flow. Ignored when `rule_names` is provided.                                                                              |
 
 ```yaml
 # Dry-run just one rule to verify its match set + log output
@@ -204,7 +212,7 @@ data:
 # Fire the full nightly flow on demand (rules + global recorder.purge)
 service: recorder_tuning.run_purge_now
 data:
-  run_recorder_purge: true
+  ha_recorder_purge: true
 ```
 
 ```yaml

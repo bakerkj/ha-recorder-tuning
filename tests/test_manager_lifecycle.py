@@ -196,7 +196,17 @@ def test_update_config_clears_zero_match_suppression():
 # ---------------------------------------------------------------------------
 
 
-def _make_manager_with_config(config_overrides: dict):
+def _make_manager_with_config(
+    *, enabled: bool = True, repack: str = "never", force_repack: bool = False, **extra
+):
+    """Build a manager with a validated-like ha_recorder_purge block.
+
+    The trio of ha_recorder_purge fields are passed as keyword args to keep
+    call sites short; ``extra`` overrides top-level fields like ``rules``.
+    ``repack`` defaults to ``"never"`` so tests don't need to freeze the
+    clock for a deterministic repack value — cadence-specific tests pass
+    ``repack="weekly"`` explicitly.
+    """
     from custom_components.recorder_tuning import RecorderTuningManager
 
     hass = MagicMock()
@@ -205,21 +215,20 @@ def _make_manager_with_config(config_overrides: dict):
         "purge_time": "03:00",
         "dry_run": False,
         "rules": [],
-        "run_recorder_purge": True,
-        "recorder_purge_repack": False,
-        # Default to "never" so callers that only care about the run_recorder_purge
-        # plumbing don't have to freeze the clock to get a deterministic repack
-        # value. Cadence-specific tests override.
-        "auto_repack": "never",
-        **config_overrides,
+        "ha_recorder_purge": {
+            "enabled": enabled,
+            "repack": repack,
+            "force_repack": force_repack,
+        },
+        **extra,
     }
     return hass, RecorderTuningManager(hass, config)
 
 
 @pytest.mark.asyncio
 async def test_recorder_purge_called_after_rules_when_enabled():
-    """With run_recorder_purge=true (default), recorder.purge is called after rules."""
-    hass, manager = _make_manager_with_config({})
+    """With enabled=true (default), recorder.purge is called after rules."""
+    hass, manager = _make_manager_with_config()
     with patch(
         "custom_components.recorder_tuning.er.async_get", return_value=MagicMock()
     ):
@@ -237,8 +246,8 @@ async def test_recorder_purge_called_after_rules_when_enabled():
 
 @pytest.mark.asyncio
 async def test_recorder_purge_skipped_when_disabled():
-    """With run_recorder_purge=false, recorder.purge must not be called."""
-    hass, manager = _make_manager_with_config({"run_recorder_purge": False})
+    """With enabled=false, recorder.purge must not be called."""
+    hass, manager = _make_manager_with_config(enabled=False)
     with patch(
         "custom_components.recorder_tuning.er.async_get", return_value=MagicMock()
     ):
@@ -255,7 +264,7 @@ async def test_recorder_purge_skipped_when_disabled():
 @pytest.mark.asyncio
 async def test_recorder_purge_skipped_in_dry_run():
     """In dry-run mode the recorder.purge call is logged but not executed."""
-    hass, manager = _make_manager_with_config({})
+    hass, manager = _make_manager_with_config()
     with patch(
         "custom_components.recorder_tuning.er.async_get", return_value=MagicMock()
     ):
@@ -271,8 +280,8 @@ async def test_recorder_purge_skipped_in_dry_run():
 
 @pytest.mark.asyncio
 async def test_recorder_purge_passes_repack_option():
-    """recorder_purge_repack=true is forwarded to the recorder.purge call."""
-    hass, manager = _make_manager_with_config({"recorder_purge_repack": True})
+    """force_repack=true is forwarded to the recorder.purge call."""
+    hass, manager = _make_manager_with_config(force_repack=True)
     with patch(
         "custom_components.recorder_tuning.er.async_get", return_value=MagicMock()
     ):
@@ -288,7 +297,7 @@ async def test_recorder_purge_passes_repack_option():
 
 
 def test_should_repack_force_wins_over_cadence():
-    """recorder_purge_repack=true must repack every day regardless of auto_repack."""
+    """force_repack=true must repack every day regardless of repack cadence."""
     from datetime import datetime
 
     from custom_components.recorder_tuning import _should_repack_today
@@ -345,9 +354,7 @@ async def test_recorder_purge_cadence_on_matching_day_sends_repack_true(freezer)
     """weekly cadence on a Sunday must pass repack=True to recorder.purge."""
     from datetime import datetime as real_datetime
 
-    hass, manager = _make_manager_with_config(
-        {"auto_repack": "weekly", "recorder_purge_repack": False}
-    )
+    hass, manager = _make_manager_with_config(repack="weekly", force_repack=False)
     freezer.move_to(real_datetime(2026, 4, 12))  # Sunday
 
     with patch(
@@ -369,9 +376,7 @@ async def test_recorder_purge_cadence_off_day_sends_repack_false(freezer):
     """weekly cadence on a non-Sunday must pass repack=False."""
     from datetime import datetime as real_datetime
 
-    hass, manager = _make_manager_with_config(
-        {"auto_repack": "weekly", "recorder_purge_repack": False}
-    )
+    hass, manager = _make_manager_with_config(repack="weekly", force_repack=False)
     freezer.move_to(real_datetime(2026, 4, 15))  # Wednesday
 
     with patch(
@@ -426,9 +431,11 @@ def _make_manager_with_rules(rules: list[dict], **config_overrides):
         "purge_time": "03:00",
         "dry_run": False,
         "rules": full_rules,
-        "run_recorder_purge": True,
-        "recorder_purge_repack": False,
-        "auto_repack": "never",
+        "ha_recorder_purge": {
+            "enabled": True,
+            "repack": "never",
+            "force_repack": False,
+        },
         **config_overrides,
     }
     return hass, RecorderTuningManager(hass, config)
@@ -560,13 +567,13 @@ async def test_run_purge_now_default_skips_trailing_purge():
 
 @pytest.mark.asyncio
 async def test_run_purge_now_explicit_opt_in_runs_trailing_purge():
-    """run_recorder_purge: true opts into the global sweep on a manual call."""
+    """ha_recorder_purge: true opts into the global sweep on a manual call."""
     hass, manager = _make_manager_with_rules(
         [{"name": "rule_a", "entity_ids": ["sensor.a"]}]
     )
 
     call = MagicMock()
-    call.data = {"run_recorder_purge": True}
+    call.data = {"ha_recorder_purge": True}
 
     with patch.object(
         manager, "_resolve_entities", side_effect=lambda rule, reg: rule["entity_ids"]
@@ -588,13 +595,13 @@ async def test_run_purge_now_explicit_opt_in_runs_trailing_purge():
 
 @pytest.mark.asyncio
 async def test_run_purge_now_rule_names_overrides_explicit_opt_in():
-    """rule_names forces-skip even if run_recorder_purge: true is also passed."""
+    """rule_names forces-skip even if ha_recorder_purge: true is also passed."""
     hass, manager = _make_manager_with_rules(
         [{"name": "rule_a", "entity_ids": ["sensor.a"]}]
     )
 
     call = MagicMock()
-    call.data = {"rule_names": ["rule_a"], "run_recorder_purge": True}
+    call.data = {"rule_names": ["rule_a"], "ha_recorder_purge": True}
 
     with patch.object(
         manager, "_resolve_entities", side_effect=lambda rule, reg: rule["entity_ids"]
@@ -707,7 +714,7 @@ async def test_recorder_purge_failure_is_logged_not_raised(caplog):
     """If recorder.purge raises, log the error and continue (don't bubble up)."""
     import logging
 
-    hass, manager = _make_manager_with_config({})
+    hass, manager = _make_manager_with_config()
     hass.services.async_call.side_effect = RuntimeError("recorder unavailable")
     caplog.set_level(logging.ERROR)
 
