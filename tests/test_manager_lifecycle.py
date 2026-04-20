@@ -229,7 +229,11 @@ def _make_manager_with_full_config(rules_list, *, top_dry_run=False):
             "force_repack": False,
         },
     }
-    return hass, RecorderTuningManager(hass, config)
+    manager = RecorderTuningManager(hass, config)
+    # _drain_recorder_queue reaches into recorder internals; unit tests
+    # run without a real recorder, so short-circuit it to a no-op.
+    manager._drain_recorder_queue = AsyncMock()  # type: ignore[method-assign]
+    return hass, manager
 
 
 def _make_rule(name, *, dry_run=None, entity_ids=None):
@@ -690,7 +694,9 @@ def _make_manager_with_config(
         },
         **extra,
     }
-    return hass, RecorderTuningManager(hass, config)
+    manager = RecorderTuningManager(hass, config)
+    manager._drain_recorder_queue = AsyncMock()  # type: ignore[method-assign]
+    return hass, manager
 
 
 @pytest.mark.asyncio
@@ -906,7 +912,9 @@ def _make_manager_with_rules(rules: list[dict], **config_overrides):
         },
         **config_overrides,
     }
-    return hass, RecorderTuningManager(hass, config)
+    manager = RecorderTuningManager(hass, config)
+    manager._drain_recorder_queue = AsyncMock()  # type: ignore[method-assign]
+    return hass, manager
 
 
 @pytest.mark.asyncio

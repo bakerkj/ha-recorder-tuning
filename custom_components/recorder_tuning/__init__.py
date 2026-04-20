@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import logging
 import re
@@ -75,6 +76,10 @@ _WRAPPER_TAG = f"__{DOMAIN}_wrapped__"
 # per-entity row-count query used in dry-run / pre-purge logging. Kept well
 # under SQLite's default max-variables limit (999).
 _PURGE_BATCH_SIZE = 100
+# Ceiling on how long the per-rule recorder-queue drain can take. Generous
+# because a busy DB can spend minutes on a large purge; we'd rather warn
+# and move on than park the scheduled run forever on a wedged recorder.
+_PURGE_DRAIN_TIMEOUT = 600
 # Cap on the minority-list length in the dry-run summary logged on setup /
 # reload (_log_dry_run_summary). Beyond this the list is truncated with
 # "…and N more" so the startup log stays readable on large installs.
@@ -702,6 +707,31 @@ class RecorderTuningManager:
             run_trailing_purge=trailing_arg,
         )
 
+    async def _drain_recorder_queue(self, rule_name: str) -> None:
+        """Wait for the recorder's task queue to drain, bounded by a timeout.
+
+        recorder.purge_entities returns as soon as a PurgeEntitiesTask is
+        queued on the recorder thread — not after the delete runs. Submitting
+        a sentinel via async_block_till_done and awaiting it forces control
+        to return only once the prior purges have actually completed (the
+        recorder worker is FIFO and single-threaded). Bounded by
+        _PURGE_DRAIN_TIMEOUT so a wedged recorder doesn't hang the run.
+        """
+        # Deferred: recorder may not be fully initialised at module load.
+        from homeassistant.components.recorder import get_instance  # noqa: PLC0415
+
+        try:
+            await asyncio.wait_for(
+                get_instance(self.hass).async_block_till_done(),
+                timeout=_PURGE_DRAIN_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            _LOGGER.warning(
+                "rule '%s': recorder queue did not drain within %ds — continuing",
+                rule_name,
+                _PURGE_DRAIN_TIMEOUT,
+            )
+
     async def _execute_all_rules(
         self,
         service_dry_run: bool | None = None,
@@ -812,6 +842,16 @@ class RecorderTuningManager:
                         {"entity_id": batch, "keep_days": keep_days},
                         blocking=True,
                     )
+                # Drain the recorder queue once per rule so the "rule
+                # complete" log below fires only after the PurgeEntitiesTasks
+                # have actually run (recorder.purge_entities returns as soon
+                # as the task is queued, not after the delete).
+                await self._drain_recorder_queue(rule_name)
+                _LOGGER.info(
+                    "recorder_tuning: rule '%s' complete — %d entities",
+                    rule_name,
+                    len(entity_ids),
+                )
 
         # After per-entity rules, optionally call HA's own recorder.purge so
         # the global purge_keep_days sweeps everything rules don't cover AND
