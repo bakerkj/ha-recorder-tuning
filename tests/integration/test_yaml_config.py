@@ -55,6 +55,9 @@ def yaml_config(integration_entry: tuple[HomeAssistant, Any]):
                 '  purge_time: "03:00"\n'
                 "  stats_keep_days: 30\n"
                 f"  dry_run: {'true' if dry_run else 'false'}\n"
+                # Match the conftest default — isolate per-entity rule
+                # behavior from the trailing global purge sweep.
+                "  run_recorder_purge: false\n"
                 f"{rules_yaml}"
             )
         return config_path

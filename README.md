@@ -42,13 +42,24 @@ separate file so the rule list doesn't clutter `configuration.yaml`:
 # configuration.yaml
 recorder:
   purge_keep_days: 30 # global default for entities not covered by a rule
+  auto_purge: false # recorder_tuning triggers the nightly purge itself
+  auto_repack: false # recorder_tuning owns the repack cadence too
 
 recorder_tuning:
   purge_time: "03:00"
   stats_keep_days: 60
   dry_run: true
+  # auto_repack: monthly   # default: second Sunday of the month (matches HA)
+  # Other cadences: "weekly" (every Sunday) or "never".
   rules: !include recorder_tuning.yaml
 ```
+
+Setting `auto_purge: false` on the recorder is the recommended pairing: after
+recorder_tuning runs its rules at `purge_time`, it calls `recorder.purge`
+itself. That single trigger sweeps everything the rules don't cover (respecting
+`purge_keep_days`) and fires the short-term-stats patch. Leaving HA's own
+auto_purge on alongside works too — you just get two purges a day instead of
+one.
 
 ```yaml
 # recorder_tuning.yaml — the list of rules (no top-level wrapper key)
@@ -76,12 +87,15 @@ and the previous configuration is preserved.
 
 ### Top-level fields
 
-| Field             | Type           | Default | Description                                                                        |
-| ----------------- | -------------- | ------- | ---------------------------------------------------------------------------------- |
-| `purge_time`      | `HH:MM` string | `03:00` | Time of day to run the per-entity purge rules.                                     |
-| `stats_keep_days` | int, 1-365     | `30`    | Days of 5-minute statistics to retain. Must be ≥ recorder's `purge_keep_days`.     |
-| `dry_run`         | bool           | `true`  | When true, every run logs what would be deleted without touching any data.         |
-| `rules`           | list of rules  | `[]`    | Per-entity purge rules. Use `!include` to pull from a separate file (see example). |
+| Field                   | Type           | Default   | Description                                                                                                                                               |
+| ----------------------- | -------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `purge_time`            | `HH:MM` string | `03:00`   | Time of day to run the per-entity purge rules.                                                                                                            |
+| `stats_keep_days`       | int, 1-365     | `30`      | Days of 5-minute statistics to retain. Must be ≥ recorder's `purge_keep_days`.                                                                            |
+| `dry_run`               | bool           | `true`    | When true, every run logs what would be deleted without touching any data.                                                                                |
+| `run_recorder_purge`    | bool           | `true`    | After per-entity rules finish, call HA's `recorder.purge` so the global `purge_keep_days` sweeps uncovered entities and the short-term-stats patch fires. |
+| `recorder_purge_repack` | bool           | `false`   | Force a repack on every purge run (expensive). Overrides `auto_repack` when true. Leave off unless you know you want it.                                  |
+| `auto_repack`           | enum           | `monthly` | Repack cadence when `recorder_purge_repack` is false. `monthly` = second Sunday of the month (HA default). Other values: `weekly` (Sundays) or `never`.   |
+| `rules`                 | list of rules  | `[]`      | Per-entity purge rules. Use `!include` to pull from a separate file (see example).                                                                        |
 
 ## Dry-Run Mode
 

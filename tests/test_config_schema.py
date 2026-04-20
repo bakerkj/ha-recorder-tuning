@@ -32,7 +32,40 @@ def test_top_level_defaults_filled_when_only_rules_given():
     assert result["purge_time"] == "03:00"
     assert result["stats_keep_days"] == 30
     assert result["dry_run"] is True
+    assert result["run_recorder_purge"] is True
+    assert result["recorder_purge_repack"] is False
     assert result["rules"] == []
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("run_recorder_purge", False),
+        ("run_recorder_purge", True),
+        ("recorder_purge_repack", True),
+        ("recorder_purge_repack", False),
+    ],
+)
+def test_top_level_recorder_purge_knobs_accept_bool(key, value):
+    result = _validate({key: value, "rules": []})
+    assert result[key] is value
+
+
+@pytest.mark.parametrize("cadence", ["never", "weekly", "monthly"])
+def test_auto_repack_accepts_known_cadences(cadence):
+    result = _validate({"auto_repack": cadence, "rules": []})
+    assert result["auto_repack"] == cadence
+
+
+def test_auto_repack_defaults_to_monthly():
+    """Mirrors HA's native auto_repack cadence (second Sunday of the month)."""
+    result = _validate({"rules": []})
+    assert result["auto_repack"] == "monthly"
+
+
+def test_auto_repack_rejects_unknown_cadence():
+    with pytest.raises(vol.Invalid):
+        _validate({"auto_repack": "daily", "rules": []})
 
 
 def test_top_level_accepts_all_fields():

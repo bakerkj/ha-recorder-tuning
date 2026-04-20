@@ -20,6 +20,10 @@ from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
+    AUTO_REPACK_MONTHLY,
+    AUTO_REPACK_NEVER,
+    AUTO_REPACK_WEEKLY,
+    CONF_AUTO_REPACK,
     CONF_DEVICE_IDS,
     CONF_DRY_RUN,
     DEFAULT_DRY_RUN,
@@ -32,11 +36,16 @@ from .const import (
     CONF_KEEP_DAYS,
     CONF_MATCH_MODE,
     CONF_PURGE_TIME,
+    CONF_RECORDER_PURGE_REPACK,
     CONF_RULE_NAME,
     CONF_RULES,
+    CONF_RUN_RECORDER_PURGE,
     CONF_STATS_KEEP_DAYS,
+    DEFAULT_AUTO_REPACK,
     DEFAULT_MATCH_MODE,
     DEFAULT_PURGE_TIME,
+    DEFAULT_RECORDER_PURGE_REPACK,
+    DEFAULT_RUN_RECORDER_PURGE,
     DEFAULT_STATS_KEEP_DAYS,
     DOMAIN,
     MATCH_MODE_ALL,
@@ -86,6 +95,32 @@ def parse_hhmm(value: str) -> time:
     return datetime.strptime(value, "%H:%M").time()
 
 
+def _should_repack_today(now: datetime, auto_repack: str, force_repack: bool) -> bool:
+    """Return True if this run should pass ``repack=True`` to ``recorder.purge``.
+
+    ``force_repack`` (``recorder_purge_repack: true``) is the explicit override
+    and wins over the cadence. Otherwise the cadence is one of:
+
+    - ``never``    → no scheduled repack
+    - ``weekly``   → every Sunday
+    - ``monthly``  → second Sunday of the month (matches HA's native
+      ``auto_repack`` cadence)
+    """
+    if force_repack:
+        return True
+    if auto_repack == AUTO_REPACK_NEVER:
+        return False
+    if auto_repack == AUTO_REPACK_WEEKLY:
+        # weekday(): Monday=0 .. Sunday=6
+        return now.weekday() == 6
+    if auto_repack == AUTO_REPACK_MONTHLY:
+        # Reuse HA's own predicate so cadence changes upstream carry over.
+        from homeassistant.components.recorder.util import is_second_sunday  # noqa: PLC0415
+
+        return is_second_sunday(now)
+    return False
+
+
 def _purge_time_validator(value: Any) -> str:
     """Voluptuous validator: accept ``HH:MM`` strings."""
     if not isinstance(value, str):
@@ -133,6 +168,16 @@ CONFIG_SCHEMA = vol.Schema(
                     CONF_STATS_KEEP_DAYS, default=DEFAULT_STATS_KEEP_DAYS
                 ): vol.All(int, vol.Range(min=1, max=365)),
                 vol.Optional(CONF_DRY_RUN, default=DEFAULT_DRY_RUN): bool,
+                vol.Optional(
+                    CONF_RUN_RECORDER_PURGE, default=DEFAULT_RUN_RECORDER_PURGE
+                ): bool,
+                vol.Optional(
+                    CONF_RECORDER_PURGE_REPACK,
+                    default=DEFAULT_RECORDER_PURGE_REPACK,
+                ): bool,
+                vol.Optional(CONF_AUTO_REPACK, default=DEFAULT_AUTO_REPACK): vol.In(
+                    [AUTO_REPACK_NEVER, AUTO_REPACK_WEEKLY, AUTO_REPACK_MONTHLY]
+                ),
                 vol.Optional(CONF_RULES, default=[]): [_RULE_SCHEMA],
             }
         )
@@ -515,6 +560,43 @@ class RecorderTuningManager:
                         {"entity_id": batch, "keep_days": keep_days},
                         blocking=True,
                     )
+
+        # After per-entity rules, optionally call HA's own recorder.purge so
+        # the global purge_keep_days sweeps everything rules don't cover AND
+        # the short-term stats monkey-patch fires. Intended to replace HA's
+        # auto_purge (set auto_purge: false on the recorder).
+        if self.config.get(CONF_RUN_RECORDER_PURGE, DEFAULT_RUN_RECORDER_PURGE):
+            repack = _should_repack_today(
+                datetime.now(),
+                self.config.get(CONF_AUTO_REPACK, DEFAULT_AUTO_REPACK),
+                self.config.get(
+                    CONF_RECORDER_PURGE_REPACK, DEFAULT_RECORDER_PURGE_REPACK
+                ),
+            )
+            if dry_run:
+                _LOGGER.info(
+                    "recorder_tuning: [DRY RUN] would call recorder.purge (repack=%s)",
+                    repack,
+                )
+            else:
+                _LOGGER.info(
+                    "recorder_tuning: calling recorder.purge (repack=%s) — "
+                    "this can take minutes on a large DB",
+                    repack,
+                )
+                try:
+                    await self.hass.services.async_call(
+                        "recorder",
+                        "purge",
+                        {"repack": repack},
+                        blocking=True,
+                    )
+                except Exception as err:  # noqa: BLE001
+                    # Broad catch: recorder may be unavailable, mid-restart,
+                    # or the service call may time out. We've already done
+                    # the per-entity work, so log and move on rather than
+                    # raising to the scheduler.
+                    _LOGGER.error("recorder_tuning: recorder.purge failed: %s", err)
 
         if dry_run:
             _LOGGER.info("recorder_tuning: [DRY RUN] complete")

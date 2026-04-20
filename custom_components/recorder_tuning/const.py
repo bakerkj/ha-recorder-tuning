@@ -37,3 +37,26 @@ DEFAULT_DRY_RUN = True
 
 # Dry-run mode
 CONF_DRY_RUN = "dry_run"
+
+# After per-entity rules finish, optionally call HA's ``recorder.purge``
+# service so the global ``purge_keep_days`` sweeps whatever the rules don't
+# cover AND the short-term stats monkey-patch gets a chance to fire.
+# Default True means recorder_tuning owns the nightly purge timing; set
+# ``auto_purge: false`` on the recorder itself to avoid double-firing.
+CONF_RUN_RECORDER_PURGE = "run_recorder_purge"
+DEFAULT_RUN_RECORDER_PURGE = True
+# ``recorder_purge_repack`` is the "always repack on every purge run" override
+# — expensive, usually not what you want. If false, the cadence is controlled
+# by ``auto_repack`` below.
+CONF_RECORDER_PURGE_REPACK = "recorder_purge_repack"
+DEFAULT_RECORDER_PURGE_REPACK = False
+
+# Auto-repack cadence — three presets mirror the common choices:
+#   never    — no repack (override-only)
+#   weekly   — every Sunday
+#   monthly  — second Sunday of the month (HA's native auto_repack cadence)
+CONF_AUTO_REPACK = "auto_repack"
+AUTO_REPACK_NEVER = "never"
+AUTO_REPACK_WEEKLY = "weekly"
+AUTO_REPACK_MONTHLY = "monthly"
+DEFAULT_AUTO_REPACK = AUTO_REPACK_MONTHLY
