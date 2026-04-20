@@ -534,6 +534,132 @@ def test_dry_run_summary_empty_ruleset_logs_nothing(caplog):
 
 
 # ---------------------------------------------------------------------------
+# Per-rule config logging
+# ---------------------------------------------------------------------------
+
+
+def test_rule_config_lines_strips_empties_and_none_dry_run():
+    """Empty lists and dry_run=None must not appear among the emitted lines."""
+    from custom_components.recorder_tuning import _rule_config_lines
+
+    rule = {
+        "name": "r1",
+        "integration_filter": [],
+        "device_ids": [],
+        "entity_ids": ["sensor.foo"],
+        "entity_globs": [],
+        "entity_regex_include": [],
+        "entity_regex_exclude": [],
+        "keep_days": 7,
+        "enabled": True,
+        "match_mode": "all",
+        "dry_run": None,
+    }
+    lines = _rule_config_lines(rule)
+
+    assert "entity_ids: ['sensor.foo']" in lines
+    assert "keep_days: 7" in lines
+    assert "match_mode: all" in lines
+    # stripped
+    joined = "\n".join(lines)
+    assert "integration_filter" not in joined
+    assert "device_ids" not in joined
+    assert "entity_globs" not in joined
+    assert "regex_include" not in joined
+    assert "regex_exclude" not in joined
+    assert "dry_run" not in joined
+    # `enabled` is omitted: disabled rules never reach this log
+    assert "enabled" not in joined
+    # `name` is omitted: it's already in the preceding summary line
+    assert "name" not in joined
+
+
+def test_rule_config_lines_key_order_matches_schema():
+    """Lines appear in the documented _RULE_CONFIG_LOG_KEYS order, not insertion order."""
+    from custom_components.recorder_tuning import _rule_config_lines
+
+    # Build the rule with keys shuffled; output must still be in schema order.
+    rule = {
+        "dry_run": True,
+        "match_mode": "any",
+        "enabled": True,
+        "keep_days": 30,
+        "entity_globs": ["sensor.zz_*"],
+        "entity_ids": ["sensor.foo"],
+        "name": "zr",
+    }
+    lines = _rule_config_lines(rule)
+    keys_in_order = [line.split(":", 1)[0] for line in lines]
+
+    assert keys_in_order == [
+        "entity_ids",
+        "entity_globs",
+        "keep_days",
+        "match_mode",
+        "dry_run",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_log_purge_plan_shape_with_matches(caplog):
+    """Log order: summary → config lines → entity lines; no 'config:' header."""
+    import logging
+
+    _, manager = _make_manager_with_full_config(
+        [_make_rule("special_rule", dry_run=False, entity_ids=["sensor.special"])]
+    )
+    rule = manager.rules[0]
+    caplog.set_level(logging.INFO)
+
+    with patch(
+        "custom_components.recorder_tuning._query_row_counts",
+        new_callable=AsyncMock,
+        return_value={"sensor.special": (42, 1700000000.0)},
+    ):
+        await manager._log_purge_plan(rule, ["sensor.special"], dry_run=False)
+
+    msgs = [r.message for r in caplog.records]
+    # No explicit "config:" header anymore — summary line leads
+    assert not any("config:" in m for m in msgs)
+    # Summary comes first
+    summary_idx = next(
+        i for i, m in enumerate(msgs) if "rule 'special_rule' (keep 7d)" in m
+    )
+    # Config field line exists and is AFTER the summary
+    config_idx = next(i for i, m in enumerate(msgs) if "[PURGE]   keep_days: 7" in m)
+    assert config_idx > summary_idx
+    # Entity line (identified by the cutoff arrow) exists and is last
+    entity_idx = next(i for i, m in enumerate(msgs) if "→" in m)
+    assert entity_idx > config_idx
+    # `name:` is NOT emitted (already in summary)
+    assert not any("[PURGE]   name:" in m for m in msgs)
+
+
+@pytest.mark.asyncio
+async def test_log_purge_plan_shape_with_nothing_to_purge(caplog):
+    """'nothing to purge' path still emits config lines after the summary."""
+    import logging
+
+    _, manager = _make_manager_with_full_config(
+        [_make_rule("fresh_rule", dry_run=True, entity_ids=["sensor.fresh"])]
+    )
+    rule = manager.rules[0]
+    caplog.set_level(logging.INFO)
+
+    with patch(
+        "custom_components.recorder_tuning._query_row_counts",
+        new_callable=AsyncMock,
+        return_value={},
+    ):
+        await manager._log_purge_plan(rule, ["sensor.fresh"], dry_run=True)
+
+    msgs = [r.message for r in caplog.records]
+    summary_idx = next(i for i, m in enumerate(msgs) if "nothing to purge" in m)
+    config_idx = next(i for i, m in enumerate(msgs) if "[DRY RUN]   keep_days: 7" in m)
+    assert config_idx > summary_idx
+
+
+# ---------------------------------------------------------------------------
 # Trailing recorder.purge call
 # ---------------------------------------------------------------------------
 
@@ -863,8 +989,8 @@ async def test_run_purge_now_keep_days_override_applied_to_rule():
 
     seen_keep_days = []
 
-    async def fake_log_plan(rule_name, entity_ids, keep_days, dry_run=False):
-        seen_keep_days.append(keep_days)
+    async def fake_log_plan(rule, entity_ids, dry_run=False):
+        seen_keep_days.append(rule["keep_days"])
 
     with patch.object(
         manager, "_resolve_entities", side_effect=lambda rule, reg: rule["entity_ids"]
@@ -896,8 +1022,8 @@ async def test_run_purge_now_keep_days_override_applies_to_all_rules_when_no_fil
 
     seen_keep_days: list[int] = []
 
-    async def fake_log_plan(rule_name, entity_ids, keep_days, dry_run=False):
-        seen_keep_days.append(keep_days)
+    async def fake_log_plan(rule, entity_ids, dry_run=False):
+        seen_keep_days.append(rule["keep_days"])
 
     with patch.object(
         manager, "_resolve_entities", side_effect=lambda rule, reg: rule["entity_ids"]

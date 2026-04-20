@@ -149,6 +149,41 @@ def _effective_dry_run(
     return top_level  # False here
 
 
+# `name` is intentionally absent: it already appears in the summary line
+# that precedes these config lines. `enabled` is absent because disabled
+# rules are filtered out before this log fires.
+_RULE_CONFIG_LOG_KEYS = (
+    CONF_INTEGRATION_FILTER,
+    CONF_DEVICE_IDS,
+    CONF_ENTITY_IDS,
+    CONF_ENTITY_GLOBS,
+    CONF_ENTITY_REGEX_INCLUDE,
+    CONF_ENTITY_REGEX_EXCLUDE,
+    CONF_KEEP_DAYS,
+    CONF_MATCH_MODE,
+    CONF_DRY_RUN,
+)
+
+
+def _rule_config_lines(rule: dict) -> list[str]:
+    """Return one ``key: value`` line per non-empty rule field, in schema order.
+
+    Drops empty selector lists and ``dry_run: None`` so the pre-purge log
+    shows only the fields the user actually set (or the schema defaulted
+    to something meaningful). Key order matches ``_RULE_SCHEMA`` so logs
+    are diff-friendly run over run.
+    """
+    lines: list[str] = []
+    for key in _RULE_CONFIG_LOG_KEYS:
+        if key not in rule:
+            continue
+        value = rule[key]
+        if value in (None, [], ""):
+            continue
+        lines.append(f"{key}: {value}")
+    return lines
+
+
 def _purge_time_validator(value: Any) -> str:
     """Voluptuous validator: accept ``HH:MM`` strings."""
     if not isinstance(value, str):
@@ -763,10 +798,10 @@ class RecorderTuningManager:
 
             keep_days = rule[CONF_KEEP_DAYS]  # required by _RULE_SCHEMA
 
-            # Always log what will be (or would be) purged before acting
-            await self._log_purge_plan(
-                rule_name, entity_ids, keep_days, dry_run=rule_dry_run
-            )
+            # Always log what will be (or would be) purged before acting.
+            # _log_purge_plan emits the summary, per-rule config dump, and
+            # per-entity lines together so the shape stays consistent.
+            await self._log_purge_plan(rule, entity_ids, dry_run=rule_dry_run)
 
             if not rule_dry_run:
                 for i in range(0, len(entity_ids), _PURGE_BATCH_SIZE):
@@ -833,12 +868,20 @@ class RecorderTuningManager:
 
     async def _log_purge_plan(
         self,
-        rule_name: str,
+        rule: dict,
         entity_ids: list[str],
-        keep_days: int,
         dry_run: bool = True,
     ) -> None:
         """Query and log which rows will be (or would be) removed for a rule.
+
+        Emits in this order:
+
+        1. Summary line — ``rule 'X' (keep 7d) — M of K matched entities ...``
+           (or ``nothing to purge`` when no rows are old enough)
+        2. Per-rule config dump — one indented ``key: value`` line per
+           non-empty field (see ``_rule_config_lines``)
+        3. Per-entity rows — one indented line per entity with a row count
+           and the oldest timestamp being trimmed
 
         Called before every purge, regardless of dry-run mode. The log prefix
         is ``[DRY RUN]`` or ``[PURGE]`` so lines are easy to grep.
@@ -853,6 +896,8 @@ class RecorderTuningManager:
         Counts below are a snapshot at query time; the actual delete count
         may differ slightly on a busy instance.
         """
+        rule_name = rule[CONF_RULE_NAME]
+        keep_days = rule[CONF_KEEP_DAYS]
         prefix = "[DRY RUN]" if dry_run else "[PURGE]"
         cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
 
@@ -880,6 +925,8 @@ class RecorderTuningManager:
                 len(entity_ids),
                 cutoff.strftime("%Y-%m-%d %H:%M UTC"),
             )
+            for line in _rule_config_lines(rule):
+                _LOGGER.info("recorder_tuning: %s   %s", prefix, line)
             return
 
         total_rows = sum(cnt for cnt, _ in results.values())
@@ -894,6 +941,8 @@ class RecorderTuningManager:
             cutoff.strftime("%Y-%m-%d %H:%M UTC"),
             total_rows,
         )
+        for line in _rule_config_lines(rule):
+            _LOGGER.info("recorder_tuning: %s   %s", prefix, line)
         for entity_id, (cnt, oldest_ts) in sorted(results.items()):
             oldest = datetime.fromtimestamp(oldest_ts, tz=timezone.utc)
             _LOGGER.info(
