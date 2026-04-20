@@ -410,10 +410,16 @@ async def test_service_inherits_config_dry_run(
     assert count_states(hass, "sensor.inherit_target") > 0
 
 
-async def test_service_explicit_false_overrides_config_dry_run(
+async def test_top_level_dry_run_locks_even_against_service_dry_run_false(
     integration_entry: tuple[HomeAssistant, Any], freezer: Any
 ) -> None:
-    """Explicit dry_run=False overrides a True config entry setting."""
+    """Top-level dry_run=true is a safety lock — service dry_run=false cannot override it.
+
+    This is the inverse of the old behaviour. Precedence is now:
+    top-level True > service > per-rule > top-level (False fallback).
+    A user who sets the top-level to True expects *nothing* can turn it off
+    without changing the config — no stray service call can delete data.
+    """
     hass, _ = integration_entry
 
     await set_state_at(hass, "sensor.override_target", "1", OLD_TIME, freezer)
@@ -437,13 +443,54 @@ async def test_service_explicit_false_overrides_config_dry_run(
 
     set_dry_run(hass, True)
 
-    # Explicit False forces a real purge despite config saying True
+    # Service says "go live"; top-level says "no". Top-level wins.
     await hass.services.async_call(
         DOMAIN, "run_purge_now", {CONF_DRY_RUN: False}, blocking=True
     )
     await wait_for_recorder(hass)
 
-    assert count_states(hass, "sensor.override_target") == 0
+    # Data must still be present — the safety lock held.
+    assert count_states(hass, "sensor.override_target") > 0
+
+
+async def test_service_dry_run_false_forces_live_when_top_level_is_false(
+    integration_entry: tuple[HomeAssistant, Any], freezer: Any
+) -> None:
+    """When top-level is false, service dry_run=false overrides per-rule dry_run=true.
+
+    Confirms the service-wins-over-rule half of the precedence rule.
+    """
+    hass, _ = integration_entry
+
+    await set_state_at(hass, "sensor.service_target", "1", OLD_TIME, freezer)
+
+    await configure_rules(
+        hass,
+        [
+            {
+                CONF_RULE_NAME: "service_rule",
+                CONF_ENTITY_GLOBS: [],
+                CONF_ENTITY_IDS: ["sensor.service_target"],
+                CONF_DEVICE_IDS: [],
+                CONF_INTEGRATION_FILTER: [],
+                CONF_ENTITY_REGEX_INCLUDE: [],
+                CONF_ENTITY_REGEX_EXCLUDE: [],
+                CONF_KEEP_DAYS: KEEP_DAYS,
+                CONF_ENABLED: True,
+                CONF_DRY_RUN: True,  # rule wants dry
+            }
+        ],
+    )
+
+    set_dry_run(hass, False)  # top-level NOT locked
+
+    # Service dry_run=False beats rule dry_run=True.
+    await hass.services.async_call(
+        DOMAIN, "run_purge_now", {CONF_DRY_RUN: False}, blocking=True
+    )
+    await wait_for_recorder(hass)
+
+    assert count_states(hass, "sensor.service_target") == 0
 
 
 async def test_config_dry_run_off_allows_delete(
@@ -512,10 +559,49 @@ async def test_per_rule_dry_run_true_prevents_delete_when_run_live(
     assert count_states(hass, "sensor.rule_dry") > 0
 
 
-async def test_per_rule_dry_run_false_forces_delete_when_run_dry(
+async def test_top_level_dry_run_locks_against_per_rule_dry_run_false(
     integration_entry: tuple[HomeAssistant, Any], freezer: Any
 ) -> None:
-    """A rule with dry_run=false must delete even when the run is dry."""
+    """Top-level dry_run=true overrides per-rule dry_run=false.
+
+    Precedence is top-level-True > everything. Rules that declare themselves
+    live can't escape the safety lock; the user has to flip the top-level
+    to actually start deleting.
+    """
+    hass, _ = integration_entry
+
+    await set_state_at(hass, "sensor.rule_live", "1", OLD_TIME, freezer)
+
+    await configure_rules(
+        hass,
+        [
+            {
+                CONF_RULE_NAME: "rule_live",
+                CONF_ENTITY_IDS: ["sensor.rule_live"],
+                CONF_KEEP_DAYS: KEEP_DAYS,
+                CONF_DRY_RUN: False,  # rule wants live
+            }
+        ],
+    )
+
+    set_dry_run(hass, True)  # top-level safety lock
+
+    # No service call override either — lock holds.
+    await hass.services.async_call(DOMAIN, "run_purge_now", {}, blocking=True)
+    await wait_for_recorder(hass)
+
+    # Data must still be present — the safety lock held.
+    assert count_states(hass, "sensor.rule_live") > 0
+
+
+async def test_per_rule_dry_run_false_goes_live_when_top_level_is_false(
+    integration_entry: tuple[HomeAssistant, Any], freezer: Any
+) -> None:
+    """When top-level is false, per-rule dry_run=false runs live (rule override applies).
+
+    This is the rollout path: flip top-level to false, then individual rules
+    with dry_run:false go live on the next run.
+    """
     hass, _ = integration_entry
 
     await set_state_at(hass, "sensor.rule_live", "1", OLD_TIME, freezer)
@@ -532,10 +618,9 @@ async def test_per_rule_dry_run_false_forces_delete_when_run_dry(
         ],
     )
 
-    set_dry_run(hass, True)
+    set_dry_run(hass, False)  # top-level unlocked
 
-    # Service call with no dry_run arg — inherits True from config, but the
-    # per-rule override should flip this rule back to live.
+    # No service call arg — per-rule dry_run=False wins over top-level False.
     await hass.services.async_call(DOMAIN, "run_purge_now", {}, blocking=True)
     await wait_for_recorder(hass)
 

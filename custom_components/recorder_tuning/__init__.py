@@ -125,6 +125,30 @@ def _should_repack_today(
     return False
 
 
+def _effective_dry_run(
+    top_level: bool, service: bool | None, rule: bool | None
+) -> bool:
+    """Resolve dry-run for one rule on one run per the documented precedence.
+
+    1. Top-level ``dry_run: true`` is a safety lock that overrides everything
+       — no service call or per-rule override can turn it off.
+    2. When the top-level is false, an explicit service-call ``dry_run`` wins
+       over the per-rule ``dry_run`` setting.
+    3. When the service call doesn't specify, the per-rule setting applies.
+    4. When neither is set, the top-level value (false at this point) applies.
+
+    Separated out as a pure function for direct matrix tests; the live call
+    sites in ``_execute_all_rules`` reach for this to stay consistent.
+    """
+    if top_level:
+        return True
+    if service is not None:
+        return service
+    if rule is not None:
+        return rule
+    return top_level  # False here
+
+
 def _purge_time_validator(value: Any) -> str:
     """Voluptuous validator: accept ``HH:MM`` strings."""
     if not isinstance(value, str):
@@ -488,40 +512,37 @@ class RecorderTuningManager:
         self._scheduled_at = purge_time_str
 
     async def _async_run_purge(self, now: datetime) -> None:
-        """Run all enabled purge rules."""
-        dry_run = self.config.get(CONF_DRY_RUN, DEFAULT_DRY_RUN)
-        _LOGGER.info(
-            "recorder_tuning: starting scheduled purge run%s",
-            " [DRY RUN]" if dry_run else "",
-        )
-        await self._execute_all_rules(dry_run=dry_run)
+        """Run all enabled purge rules (scheduled nightly firing)."""
+        _LOGGER.info("recorder_tuning: starting scheduled purge run")
+        # Scheduled runs have no service-call context; fall through to the
+        # per-rule + top-level precedence inside _execute_all_rules.
+        await self._execute_all_rules(service_dry_run=None)
 
     async def async_run_purge_now(self, call: ServiceCall) -> None:
         """Service handler: run purge immediately.
 
-        If ``dry_run`` is explicitly provided in the service call it overrides
-        the configured setting. If omitted, the configured value is used.
+        Precedence (see ``_effective_dry_run``):
+
+        1. Top-level ``dry_run: true`` in configuration.yaml is a safety lock
+           — nothing below can override it.
+        2. When the top-level is false, an explicit ``dry_run`` in the service
+           call wins over per-rule ``dry_run`` settings.
+        3. Otherwise the per-rule ``dry_run`` (if set) applies.
+        4. Otherwise the top-level value (false here) applies.
 
         ``rule_names`` (optional list of strings) restricts the run to rules
         with matching ``name``. Unknown names are logged as a warning but do
         not abort the call.
 
         ``keep_days`` (optional int 1-365) overrides the ``keep_days`` on
-        every rule that runs in this call. Does not persist — the next
-        scheduled run uses the YAML-configured value again.
+        every rule that runs in this call. Does not persist.
 
         Unlike the scheduled nightly run, the trailing global ``recorder.purge``
-        call is **skipped by default** on a manual invocation — the common use
-        case is testing one or more rules, and the global sweep is slow enough
-        to be surprising when triggered by hand. Pass ``ha_recorder_purge:
-        true`` to opt into the full nightly flow. ``rule_names`` always
-        implies-skip regardless.
+        call is **skipped by default** on a manual invocation. Pass
+        ``ha_recorder_purge: true`` to opt into the full nightly flow.
+        ``rule_names`` always implies-skip regardless.
         """
-        if CONF_DRY_RUN in call.data:
-            dry_run = call.data[CONF_DRY_RUN]
-        else:
-            dry_run = self.config.get(CONF_DRY_RUN, DEFAULT_DRY_RUN)
-
+        service_dry_run: bool | None = call.data.get(CONF_DRY_RUN)
         keep_days_override = call.data.get(CONF_KEEP_DAYS)
 
         requested_names = call.data.get(CONF_RULE_NAMES)
@@ -560,11 +581,8 @@ class RecorderTuningManager:
                     sorted(requested_names),
                 )
                 return
-            # rule_names always skips the trailing purge (trailing_arg already False)
-            kind = "dry-run" if dry_run else "purge"
             _LOGGER.info(
-                "recorder_tuning: %s triggered for specific rule(s) via service: %s%s",
-                kind,
+                "recorder_tuning: run_purge_now service triggered for rule(s): %s%s",
                 sorted(r[CONF_RULE_NAME] for r in rules_arg),
                 override_suffix,
             )
@@ -572,18 +590,11 @@ class RecorderTuningManager:
             # Explicit opt-in to the global sweep — only honoured when no
             # rule_names filter is present.
             trailing_arg = bool(call.data.get(CONF_HA_RECORDER_PURGE, False))
-            if dry_run:
-                _LOGGER.info(
-                    "recorder_tuning: dry-run triggered via service — no data will be deleted%s%s",
-                    " (includes global recorder.purge)" if trailing_arg else "",
-                    override_suffix,
-                )
-            else:
-                _LOGGER.info(
-                    "recorder_tuning: manual purge triggered via service%s%s",
-                    " (includes global recorder.purge)" if trailing_arg else "",
-                    override_suffix,
-                )
+            _LOGGER.info(
+                "recorder_tuning: run_purge_now service triggered%s%s",
+                " (includes global recorder.purge)" if trailing_arg else "",
+                override_suffix,
+            )
 
         if keep_days_override is not None:
             # Shallow-copy each rule with the override applied. We use
@@ -595,22 +606,27 @@ class RecorderTuningManager:
             ]
 
         await self._execute_all_rules(
-            dry_run=dry_run, rules=rules_arg, run_trailing_purge=trailing_arg
+            service_dry_run=service_dry_run,
+            rules=rules_arg,
+            run_trailing_purge=trailing_arg,
         )
 
     async def _execute_all_rules(
         self,
-        dry_run: bool = False,
+        service_dry_run: bool | None = None,
         rules: list[dict] | None = None,
         run_trailing_purge: bool | None = None,
     ) -> None:
         """Resolve entities for each rule and call recorder.purge_entities.
 
-        ``dry_run`` is the run-level default; any rule with an explicit
-        ``dry_run`` field in YAML overrides it for that rule only.
+        ``service_dry_run`` — value from an explicit ``dry_run`` service
+        parameter if the caller is a service handler. ``None`` for scheduled
+        runs. Feeds ``_effective_dry_run`` along with the top-level config
+        value and each rule's own ``dry_run`` setting.
 
         ``rules`` — if provided, iterate this list instead of ``self.rules``.
-        The service handler uses this for ``rule_names``-filtered runs.
+        The service handler uses this for ``rule_names``-filtered runs and
+        ``keep_days`` overrides.
 
         ``run_trailing_purge`` — if None, defer to
         ``ha_recorder_purge.enabled`` in config. If explicitly False, skip the
@@ -619,24 +635,50 @@ class RecorderTuningManager:
         """
         ent_reg = er.async_get(self.hass)
         active_rules = self.rules if rules is None else rules
+        top_level_dry_run = self.config.get(CONF_DRY_RUN, DEFAULT_DRY_RUN)
 
-        if dry_run:
-            _LOGGER.info(
-                "recorder_tuning: [DRY RUN] starting — no data will be deleted "
-                "(rules may override per-rule)"
-            )
-        else:
-            _LOGGER.info(
-                "recorder_tuning: [PURGE] starting (rules may override per-rule)"
-            )
-
+        # Resolve the effective dry_run for every enabled rule up front so
+        # the aggregate start/complete log can name the mode unambiguously.
+        plan: list[tuple[dict, bool]] = []
         for rule in active_rules:
             if not rule.get(CONF_ENABLED, True):
                 _LOGGER.debug(
                     "recorder_tuning: skipping disabled rule '%s'", rule[CONF_RULE_NAME]
                 )
                 continue
+            eff = _effective_dry_run(
+                top_level=top_level_dry_run,
+                service=service_dry_run,
+                rule=rule.get(CONF_DRY_RUN),
+            )
+            plan.append((rule, eff))
 
+        dry_count = sum(1 for _, eff in plan if eff)
+        live_count = len(plan) - dry_count
+        trailing_effective_dry = _effective_dry_run(
+            top_level=top_level_dry_run, service=service_dry_run, rule=None
+        )
+
+        if not plan:
+            _LOGGER.info("recorder_tuning: no enabled rules to run")
+            mode_label = "[DRY RUN]" if trailing_effective_dry else "[PURGE]"
+        elif live_count == 0:
+            _LOGGER.info(
+                "recorder_tuning: [DRY RUN] starting — no data will be deleted"
+            )
+            mode_label = "[DRY RUN]"
+        elif dry_count == 0:
+            _LOGGER.info("recorder_tuning: [PURGE] starting")
+            mode_label = "[PURGE]"
+        else:
+            _LOGGER.info(
+                "recorder_tuning: [MIXED] starting — %d rule(s) LIVE, %d rule(s) DRY RUN",
+                live_count,
+                dry_count,
+            )
+            mode_label = "[MIXED]"
+
+        for rule, rule_dry_run in plan:
             rule_name = rule[CONF_RULE_NAME]
             entity_ids = self._resolve_entities(rule, ent_reg)
 
@@ -664,10 +706,6 @@ class RecorderTuningManager:
             self._warned_empty_rules.discard(rule_name)
 
             keep_days = rule[CONF_KEEP_DAYS]  # required by _RULE_SCHEMA
-            # Per-rule override: schema stores None when absent so we can tell
-            # "not set" from "explicitly false".
-            rule_override = rule.get(CONF_DRY_RUN)
-            rule_dry_run = dry_run if rule_override is None else rule_override
 
             # Always log what will be (or would be) purged before acting
             await self._log_purge_plan(
@@ -710,7 +748,7 @@ class RecorderTuningManager:
                     DEFAULT_HA_RECORDER_PURGE_FORCE_REPACK,
                 ),
             )
-            if dry_run:
+            if trailing_effective_dry:
                 _LOGGER.info(
                     "recorder_tuning: [DRY RUN] would call recorder.purge (repack=%s)",
                     repack,
@@ -735,10 +773,7 @@ class RecorderTuningManager:
                     # raising to the scheduler.
                     _LOGGER.error("recorder_tuning: recorder.purge failed: %s", err)
 
-        if dry_run:
-            _LOGGER.info("recorder_tuning: [DRY RUN] complete")
-        else:
-            _LOGGER.info("recorder_tuning: purge run complete")
+        _LOGGER.info("recorder_tuning: %s complete", mode_label)
 
     async def _log_purge_plan(
         self,
