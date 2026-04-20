@@ -1,100 +1,125 @@
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
-"""Unit tests for ``RecorderTuningManager.async_service_reload``.
+"""Unit tests for the reload service handler.
 
 The integration tests in ``tests/integration/test_yaml_config.py`` exercise
-this through a full HA instance. These unit tests pin the contract
-directly — particularly the "reload is atomic: on failure the previous
-rule set is preserved" invariant — without the ~80ms per-test cost of
-spinning up a recorder.
+this through a full HA instance. These unit tests pin the contract directly
+— particularly the "reload is atomic: on failure the previous rule set is
+preserved" invariant — without the ~80ms per-test cost of spinning up a
+recorder.
 """
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from homeassistant.exceptions import HomeAssistantError
 
 
-def _make_manager(initial_rules: list[dict]) -> tuple[MagicMock, object]:
-    """Return (hass, manager) with executor calls patched to run synchronously."""
+def _make_manager(initial_rules):
+    """Return a manager whose rules start as ``initial_rules``."""
     from custom_components.recorder_tuning import RecorderTuningManager
 
-    async def fake_executor(func, *args, **kwargs):
-        return func(*args, **kwargs)
-
     hass = MagicMock()
-    hass.async_add_executor_job = fake_executor
-
-    manager = RecorderTuningManager(hass, MagicMock(), list(initial_rules))
+    config = {"purge_time": "03:00", "dry_run": False, "rules": list(initial_rules)}
+    manager = RecorderTuningManager(hass, config)
     return hass, manager
 
 
 @pytest.mark.asyncio
 async def test_reload_success_replaces_rules(monkeypatch):
+    """A successful reload swaps in the new rule set."""
     import custom_components.recorder_tuning as mod
 
-    _, manager = _make_manager([{"name": "old", "keep_days": 7}])
+    hass, manager = _make_manager([{"name": "old", "keep_days": 7}])
 
-    new_rules = [{"name": "new", "keep_days": 3}]
-    monkeypatch.setattr(mod, "_load_yaml_rules", lambda hass: new_rules)
+    new_rules = [
+        {
+            "name": "new",
+            "keep_days": 3,
+            "entity_ids": ["sensor.x"],
+        }
+    ]
+    new_conf = {
+        "recorder_tuning": {
+            "purge_time": "03:00",
+            "stats_keep_days": 30,
+            "dry_run": False,
+            "rules": new_rules,
+        }
+    }
 
-    await manager.async_service_reload(MagicMock())
+    monkeypatch.setattr(mod, "async_hass_config_yaml", AsyncMock(return_value=new_conf))
+    monkeypatch.setattr(mod, "_apply_stats_patch", MagicMock())
 
-    assert manager.rules == new_rules
+    handler = mod._make_reload_handler(hass, manager)
+    await handler(MagicMock())
+
+    # CONFIG_SCHEMA fills in default fields on each rule; compare by name/keep_days
+    assert [r["name"] for r in manager.rules] == ["new"]
+    assert manager.rules[0]["keep_days"] == 3
 
 
 @pytest.mark.asyncio
-async def test_reload_missing_file_clears_rules(monkeypatch):
-    """Missing YAML file → rules cleared; no exception."""
+async def test_reload_without_domain_key_raises_and_preserves_rules(monkeypatch):
+    """Reload when recorder_tuning: is not in the reloaded YAML raises."""
     import custom_components.recorder_tuning as mod
 
-    _, manager = _make_manager([{"name": "old", "keep_days": 7}])
+    hass, manager = _make_manager([{"name": "guard", "keep_days": 7}])
 
-    # _load_yaml_rules returns [] for missing file
-    monkeypatch.setattr(mod, "_load_yaml_rules", lambda hass: [])
+    monkeypatch.setattr(mod, "async_hass_config_yaml", AsyncMock(return_value={}))
+    monkeypatch.setattr(mod, "_apply_stats_patch", MagicMock())
 
-    await manager.async_service_reload(MagicMock())
+    handler = mod._make_reload_handler(hass, manager)
 
-    assert manager.rules == []
+    with pytest.raises(HomeAssistantError, match="no recorder_tuning:"):
+        await handler(MagicMock())
+
+    # Previous rule set must survive
+    assert manager.rules == [{"name": "guard", "keep_days": 7}]
 
 
 @pytest.mark.asyncio
-async def test_reload_failure_preserves_rules(monkeypatch):
-    """If _load_yaml_rules raises, the previous rule set must survive untouched."""
+async def test_reload_yaml_error_propagates_and_preserves_rules(monkeypatch):
+    """A YAML parse error surfaces as HomeAssistantError; rules are untouched."""
     import custom_components.recorder_tuning as mod
 
-    original = [{"name": "guard", "keep_days": 7}]
-    _, manager = _make_manager(original)
+    hass, manager = _make_manager([{"name": "guard", "keep_days": 7}])
 
-    def raising(hass):
+    async def raising(hass_arg):
         raise HomeAssistantError("bad yaml")
 
-    monkeypatch.setattr(mod, "_load_yaml_rules", raising)
+    monkeypatch.setattr(mod, "async_hass_config_yaml", raising)
+
+    handler = mod._make_reload_handler(hass, manager)
 
     with pytest.raises(HomeAssistantError, match="bad yaml"):
-        await manager.async_service_reload(MagicMock())
+        await handler(MagicMock())
 
     # Rule set survives the failed reload
-    assert manager.rules == original
+    assert manager.rules == [{"name": "guard", "keep_days": 7}]
 
 
 @pytest.mark.asyncio
-async def test_reload_failure_does_not_partially_apply(monkeypatch):
-    """Even if _load_yaml_rules raises after producing partial state, rules stay the same."""
+async def test_reload_schema_error_raises_and_preserves_rules(monkeypatch):
+    """A schema violation in the reloaded config raises and preserves rules."""
     import custom_components.recorder_tuning as mod
 
-    original = [{"name": "guard", "keep_days": 7}]
-    _, manager = _make_manager(original)
+    hass, manager = _make_manager([{"name": "guard", "keep_days": 7}])
 
-    def raising_after_work(hass):
-        # Simulates the loader doing some work (e.g., partial parse) before raising.
-        raise HomeAssistantError("parse error on rule[3]")
+    bad_conf = {
+        "recorder_tuning": {
+            "rules": [{"name": "oops", "keep_days": 999999}],  # out of range
+        }
+    }
+    monkeypatch.setattr(mod, "async_hass_config_yaml", AsyncMock(return_value=bad_conf))
+    monkeypatch.setattr(mod, "_apply_stats_patch", MagicMock())
 
-    monkeypatch.setattr(mod, "_load_yaml_rules", raising_after_work)
+    handler = mod._make_reload_handler(hass, manager)
 
-    with pytest.raises(HomeAssistantError):
-        await manager.async_service_reload(MagicMock())
+    with pytest.raises(HomeAssistantError, match="invalid configuration"):
+        await handler(MagicMock())
 
-    assert manager.rules == original
+    # Rule set survives the failed reload
+    assert manager.rules == [{"name": "guard", "keep_days": 7}]

@@ -34,23 +34,54 @@ directory and restart Home Assistant.
 
 ## Setup
 
-1. Go to **Settings → Integrations → Add Integration** and search for **Recorder
-   Tuning**.
-2. Set your preferred **daily purge time** (24h format, e.g. `03:00`).
-3. Set the **short-term statistics retention** in days (must be ≥ your
-   recorder's `purge_keep_days`; default 30).
-4. Leave **dry-run mode** enabled (the default) until you have reviewed the logs
-   and confirmed your rules are correct.
-5. Create `recorder_tuning.yaml` in your HA config directory to define purge
-   rules — see [YAML Configuration](#yaml-configuration) below. Call the
-   `recorder_tuning.reload` service after editing the file.
-
-Also configure `recorder` in `configuration.yaml`:
+Recorder Tuning is **YAML-configured**. Add a top-level `recorder_tuning:` block
+to `configuration.yaml`. Rules are typically pulled in via `!include` from a
+separate file so the rule list doesn't clutter `configuration.yaml`:
 
 ```yaml
+# configuration.yaml
 recorder:
   purge_keep_days: 30 # global default for entities not covered by a rule
+
+recorder_tuning:
+  purge_time: "03:00"
+  stats_keep_days: 60
+  dry_run: true
+  rules: !include recorder_tuning.yaml
 ```
+
+```yaml
+# recorder_tuning.yaml — the list of rules (no top-level wrapper key)
+- name: Frigate camera metrics
+  integration_filter: [frigate]
+  keep_days: 7
+
+- name: ESPHome diagnostic sensors
+  integration_filter: [esphome]
+  entity_regex_include:
+    - "_voltage$"
+    - "_uptime$"
+    - "_wifi_signal$"
+  keep_days: 7
+
+- name: Davis weather station
+  integration_filter: [mqtt]
+  entity_regex_include: ["^sensor\\.davis_"]
+  keep_days: 30
+```
+
+Reload after editing either file by calling the `recorder_tuning.reload` service
+— no HA restart required. If the YAML fails validation the reload is rejected
+and the previous configuration is preserved.
+
+### Top-level fields
+
+| Field             | Type           | Default | Description                                                                        |
+| ----------------- | -------------- | ------- | ---------------------------------------------------------------------------------- |
+| `purge_time`      | `HH:MM` string | `03:00` | Time of day to run the per-entity purge rules.                                     |
+| `stats_keep_days` | int, 1-365     | `30`    | Days of 5-minute statistics to retain. Must be ≥ recorder's `purge_keep_days`.     |
+| `dry_run`         | bool           | `true`  | When true, every run logs what would be deleted without touching any data.         |
+| `rules`           | list of rules  | `[]`    | Per-entity purge rules. Use `!include` to pull from a separate file (see example). |
 
 ## Dry-Run Mode
 
@@ -74,49 +105,13 @@ would have been) deleted.
 
 To disable dry-run and start live purging:
 
-- **UI**: Settings → Integrations → Recorder Tuning → Configure → Toggle dry-run
-  mode
-- **Service**: call `recorder_tuning.run_purge_now` with `dry_run: false` for a
-  one-off live purge while leaving the persistent setting unchanged.
-- **Per-rule**: add `dry_run: true` (or `false`) to an individual rule in
-  `recorder_tuning.yaml` to force its mode regardless of the integration-wide
-  setting. Useful when iterating on a newly-added rule while leaving the rest of
-  the rule set live.
-
-## YAML Configuration
-
-Purge rules are defined exclusively in `recorder_tuning.yaml` in your HA config
-directory (alongside `configuration.yaml`). If the file is missing or invalid
-the integration runs with zero rules active; state and stats retention still
-apply.
-
-```yaml
-# recorder_tuning.yaml
-
-rules:
-  - name: Frigate camera metrics
-    integration_filter: [frigate]
-    keep_days: 7
-
-  - name: ESPHome diagnostic sensors
-    integration_filter: [esphome]
-    entity_regex_include:
-      - "_voltage$"
-      - "_uptime$"
-      - "_wifi_signal$"
-    keep_days: 7
-
-  - name: Davis weather station
-    integration_filter: [mqtt]
-    entity_regex_include: ["^sensor\\.davis_"]
-    keep_days: 30
-```
-
-After editing the file, call `recorder_tuning.reload` to hot-swap the rules
-without restarting Home Assistant. The integration does **not** watch the file
-for changes — edits only take effect once you fire the reload service (or
-restart HA). If the reload surfaces a parse / schema error, the previous rule
-set is preserved.
+- **Globally**: flip `dry_run: false` under `recorder_tuning:` in
+  `configuration.yaml` and call `recorder_tuning.reload`.
+- **One-off**: call `recorder_tuning.run_purge_now` with `dry_run: false` for a
+  single live purge while leaving the YAML setting unchanged.
+- **Per-rule**: add `dry_run: true` (or `false`) to an individual rule to force
+  its mode regardless of the top-level setting. Useful when rolling out rules
+  one at a time — turn each rule live as you gain confidence in its log output.
 
 ### Rule matching
 
@@ -150,7 +145,7 @@ subtracts from the final set, regardless of `match_mode`.
 | `name`                 | string          | yes        | Identifier for the rule (free-form).                                                                                              |
 | `keep_days`            | int, 1-365      | yes        | Days of recorder history to retain for matched entities.                                                                          |
 | `enabled`              | bool            | no (true)  | Set to `false` to suspend a rule without deleting it.                                                                             |
-| `dry_run`              | bool            | no         | Per-rule override. If set, forces this rule into dry-run (`true`) or live (`false`) regardless of the integration-wide setting.   |
+| `dry_run`              | bool            | no         | Per-rule override. If set, forces this rule into dry-run (`true`) or live (`false`) regardless of the top-level setting.          |
 | `match_mode`           | `all` \| `any`  | no (`all`) | How positive selectors combine within the rule. `all` = intersection; `any` = union.                                              |
 | `integration_filter`   | list of strings | no         | Integration/platform names, e.g. `[frigate, esphome]`.                                                                            |
 | `device_ids`           | list of strings | no         | Device IDs. All entities under each device (including disabled ones) are included. Find IDs at Settings → Devices → (device) URL. |
@@ -161,9 +156,8 @@ subtracts from the final set, regardless of `match_mode`.
 
 At least one positive selector (`integration_filter`, `device_ids`,
 `entity_ids`, `entity_globs`, or `entity_regex_include`) is required per rule.
-Invalid rules (missing `name`, missing `keep_days`, out-of-range `keep_days`,
-bad regex, unknown `match_mode`, etc.) are skipped individually — other valid
-rules in the same file still run.
+Invalid YAML fails the whole `recorder_tuning:` block at startup (or the reload
+call) — nothing is partially applied.
 
 ## Services
 
@@ -174,7 +168,7 @@ the overnight run.
 
 | Parameter | Type | Default             | Description                                                                   |
 | --------- | ---- | ------------------- | ----------------------------------------------------------------------------- |
-| `dry_run` | bool | _(inherits config)_ | Override dry-run mode for this call only. Omit to use the persistent setting. |
+| `dry_run` | bool | _(inherits config)_ | Override dry-run mode for this call only. Omit to use the configured setting. |
 
 ```yaml
 # Force a live purge even while dry-run mode is ON in config
@@ -185,9 +179,9 @@ data:
 
 ### `recorder_tuning.reload`
 
-Reload rules from `recorder_tuning.yaml` in the HA config directory without
-restarting Home Assistant. If the file is missing or invalid the integration
-runs with zero rules.
+Reload `recorder_tuning:` (and any `!include`'d rules file) from
+`configuration.yaml` without restarting Home Assistant. If the YAML is invalid
+the reload is rejected and the previous configuration is preserved.
 
 ```yaml
 service: recorder_tuning.reload
@@ -198,8 +192,8 @@ service: recorder_tuning.reload
 ### Entity purge rules
 
 1. At the configured time each day, the integration iterates all enabled rules.
-2. For each rule it builds a candidate set using the union of all positive
-   selectors (integrations, devices, entity IDs, glob patterns, regex include).
+2. For each rule it resolves a candidate entity set from the positive selectors
+   (intersected or unioned per `match_mode`).
 3. Regex exclude patterns are applied to the candidate set, removing any
    matches.
 4. The DB is queried to log the row count and date range for every entity with
@@ -225,9 +219,7 @@ aggressively than the recorder would by default.
 
 ## Notes
 
-- Only one instance of Recorder Tuning can be configured (single-entry
-  integration).
-- Disabling a rule (rather than deleting it) suspends it without losing its
+- Disabling a rule (`enabled: false`) suspends it without losing its
   configuration.
-- Removing the integration restores the original short-term statistics purge
-  behavior on the next HA restart.
+- Removing the `recorder_tuning:` block and restarting HA restores the original
+  short-term statistics purge behavior.

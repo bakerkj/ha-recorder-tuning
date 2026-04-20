@@ -1,16 +1,11 @@
 # Copyright (c) 2026 Kenneth Baker <bakerkj@umich.edu>
 # All rights reserved.
-"""Integration tests for YAML-based rule configuration.
+"""Integration tests for YAML-based configuration and the reload service.
 
-Rules are loaded exclusively from ``recorder_tuning.yaml`` in the HA config
-directory. These tests verify that rules take effect at setup, survive a
-reload after edits, fail gracefully on missing or malformed files, and
-skip individual rules with schema errors without aborting the rest.
-
-The YAML file is written into the real HA config directory
-(``hass.config.config_dir``) so that ``_load_yaml_rules`` finds it via
-``hass.config.path()``.  Each test cleans up the file after itself via a
-fixture.
+The integration is configured via a top-level ``recorder_tuning:`` block in
+``configuration.yaml`` (typically with ``rules: !include ...``). These tests
+write ``configuration.yaml`` into the HA config dir, call the reload
+service, and verify that the new rules take effect end-to-end.
 """
 
 from __future__ import annotations
@@ -23,10 +18,7 @@ import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
-from custom_components.recorder_tuning.const import (
-    DOMAIN,
-    YAML_CONFIG_FILE,
-)
+from custom_components.recorder_tuning.const import DOMAIN
 
 from .conftest import (
     NOW,
@@ -41,25 +33,36 @@ KEEP_DAYS = 4  # OLD_TIME (10d) is beyond this; RECENT_TIME (3d) is within
 
 
 # ---------------------------------------------------------------------------
-# Fixture: write / clean up recorder_tuning.yaml in HA config dir
+# Fixture: write configuration.yaml in the HA config dir and clean up
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
 def yaml_config(integration_entry: tuple[HomeAssistant, Any]):
-    """Provide a helper that writes recorder_tuning.yaml and cleans up after."""
+    """Provide a helper that writes configuration.yaml with recorder_tuning:."""
     hass, _ = integration_entry
-    yaml_path = hass.config.path(YAML_CONFIG_FILE)
+    config_path = hass.config.path("configuration.yaml")
 
-    def _write(content: str) -> str:
-        with open(yaml_path, "w", encoding="utf-8") as fh:
-            fh.write(content)
-        return yaml_path
+    def _write_rules(rules_yaml: str, *, dry_run: bool = False) -> str:
+        """Write configuration.yaml with a recorder_tuning: block.
 
-    yield hass, _write
+        ``rules_yaml`` is spliced in verbatim under ``rules:`` so tests can
+        write invalid YAML to exercise error handling.
+        """
+        with open(config_path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "recorder_tuning:\n"
+                '  purge_time: "03:00"\n'
+                "  stats_keep_days: 30\n"
+                f"  dry_run: {'true' if dry_run else 'false'}\n"
+                f"{rules_yaml}"
+            )
+        return config_path
 
-    if os.path.isfile(yaml_path):
-        os.remove(yaml_path)
+    yield hass, _write_rules
+
+    if os.path.isfile(config_path):
+        os.remove(config_path)
 
 
 async def run_purge(hass: HomeAssistant) -> None:
@@ -69,49 +72,62 @@ async def run_purge(hass: HomeAssistant) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Basic YAML loading
+# Reload hot-swaps rules from configuration.yaml
 # ---------------------------------------------------------------------------
 
 
-async def test_yaml_rules_loaded_at_setup(
+async def test_reload_service_picks_up_config_changes(
     yaml_config: tuple[HomeAssistant, Any], freezer: Any
 ) -> None:
-    """Rules in recorder_tuning.yaml are active immediately after reload."""
-    hass, write_yaml = yaml_config
+    """Editing configuration.yaml and calling reload hot-swaps the rules."""
+    hass, write_rules = yaml_config
 
-    await set_state_at(hass, "sensor.yaml_target", "1", OLD_TIME, freezer)
+    await set_state_at(hass, "sensor.first_target", "1", OLD_TIME, freezer)
+    await set_state_at(hass, "sensor.second_target", "2", OLD_TIME, freezer)
 
-    write_yaml(f"""
-rules:
-  - name: yaml_rule
-    entity_ids: [sensor.yaml_target]
-    keep_days: {KEEP_DAYS}
+    write_rules(f"""  rules:
+    - name: rule_v1
+      entity_ids: [sensor.first_target]
+      keep_days: {KEEP_DAYS}
 """)
-
     await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
     await run_purge(hass)
 
-    assert count_states(hass, "sensor.yaml_target") == 0
+    assert count_states(hass, "sensor.first_target") == 0
+    assert count_states(hass, "sensor.second_target") > 0
+
+    await set_state_at(hass, "sensor.first_target", "new", OLD_TIME, freezer)
+
+    write_rules(f"""  rules:
+    - name: rule_v2
+      entity_ids: [sensor.second_target]
+      keep_days: {KEEP_DAYS}
+""")
+    await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
+    await run_purge(hass)
+
+    assert count_states(hass, "sensor.second_target") == 0
+    # first_target state written above is NOT targeted by v2 — must survive
+    assert count_states(hass, "sensor.first_target") > 0
 
 
-async def test_yaml_multiple_rules(
+async def test_reload_with_multiple_rules_all_run(
     yaml_config: tuple[HomeAssistant, Any], freezer: Any
 ) -> None:
-    """Multiple rules in the YAML file all run independently."""
-    hass, write_yaml = yaml_config
+    """Multiple rules after reload all run independently."""
+    hass, write_rules = yaml_config
 
     await set_state_at(hass, "sensor.group_a", "1", OLD_TIME, freezer)
     await set_state_at(hass, "sensor.group_b", "2", OLD_TIME, freezer)
     await set_state_at(hass, "sensor.untouched", "3", OLD_TIME, freezer)
 
-    write_yaml(f"""
-rules:
-  - name: rule_a
-    entity_ids: [sensor.group_a]
-    keep_days: {KEEP_DAYS}
-  - name: rule_b
-    entity_ids: [sensor.group_b]
-    keep_days: {KEEP_DAYS}
+    write_rules(f"""  rules:
+    - name: rule_a
+      entity_ids: [sensor.group_a]
+      keep_days: {KEEP_DAYS}
+    - name: rule_b
+      entity_ids: [sensor.group_b]
+      keep_days: {KEEP_DAYS}
 """)
 
     await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
@@ -122,118 +138,25 @@ rules:
     assert count_states(hass, "sensor.untouched") > 0
 
 
-async def test_yaml_glob_selector(
+async def test_reload_disabled_rule_skipped(
     yaml_config: tuple[HomeAssistant, Any], freezer: Any
 ) -> None:
-    """Glob patterns in YAML rules are honoured."""
-    hass, write_yaml = yaml_config
+    """A rule with enabled: false is loaded but does not purge."""
+    hass, write_rules = yaml_config
 
-    await set_state_at(hass, "sensor.yaml_power_a", "10", OLD_TIME, freezer)
-    await set_state_at(hass, "sensor.yaml_power_b", "20", OLD_TIME, freezer)
-    await set_state_at(hass, "sensor.other_sensor", "5", OLD_TIME, freezer)
+    await set_state_at(hass, "sensor.disabled_target", "1", OLD_TIME, freezer)
 
-    write_yaml(f"""
-rules:
-  - name: glob_rule
-    entity_globs: ["sensor.yaml_power_*"]
-    keep_days: {KEEP_DAYS}
+    write_rules(f"""  rules:
+    - name: disabled_rule
+      entity_ids: [sensor.disabled_target]
+      keep_days: {KEEP_DAYS}
+      enabled: false
 """)
 
     await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
     await run_purge(hass)
 
-    assert count_states(hass, "sensor.yaml_power_a") == 0
-    assert count_states(hass, "sensor.yaml_power_b") == 0
-    assert count_states(hass, "sensor.other_sensor") > 0
-
-
-async def test_yaml_disabled_rule_skipped(
-    yaml_config: tuple[HomeAssistant, Any], freezer: Any
-) -> None:
-    """A rule with enabled: false in YAML does not purge."""
-    hass, write_yaml = yaml_config
-
-    await set_state_at(hass, "sensor.yaml_disabled_target", "1", OLD_TIME, freezer)
-
-    write_yaml(f"""
-rules:
-  - name: disabled_rule
-    entity_ids: [sensor.yaml_disabled_target]
-    keep_days: {KEEP_DAYS}
-    enabled: false
-""")
-
-    await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
-    await run_purge(hass)
-
-    assert count_states(hass, "sensor.yaml_disabled_target") > 0
-
-
-# ---------------------------------------------------------------------------
-# Hot reload
-# ---------------------------------------------------------------------------
-
-
-async def test_reload_service_picks_up_file_changes(
-    yaml_config: tuple[HomeAssistant, Any], freezer: Any
-) -> None:
-    """Editing the YAML file and calling reload hot-swaps the rules."""
-    hass, write_yaml = yaml_config
-
-    await set_state_at(hass, "sensor.first_target", "1", OLD_TIME, freezer)
-    await set_state_at(hass, "sensor.second_target", "2", OLD_TIME, freezer)
-
-    write_yaml(f"""
-rules:
-  - name: rule_v1
-    entity_ids: [sensor.first_target]
-    keep_days: {KEEP_DAYS}
-""")
-    await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
-    await run_purge(hass)
-
-    assert count_states(hass, "sensor.first_target") == 0
-    assert count_states(hass, "sensor.second_target") > 0
-
-    await set_state_at(hass, "sensor.first_target", "new", OLD_TIME, freezer)
-
-    write_yaml(f"""
-rules:
-  - name: rule_v2
-    entity_ids: [sensor.second_target]
-    keep_days: {KEEP_DAYS}
-""")
-    await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
-    await run_purge(hass)
-
-    assert count_states(hass, "sensor.second_target") == 0
-    # first_target state written above is NOT targeted by v2 — must survive
-    assert count_states(hass, "sensor.first_target") > 0
-
-
-async def test_reload_without_file_runs_zero_rules(
-    yaml_config: tuple[HomeAssistant, Any], freezer: Any
-) -> None:
-    """Removing the YAML file and reloading deactivates all rules."""
-    hass, write_yaml = yaml_config
-
-    await set_state_at(hass, "sensor.was_yaml", "1", OLD_TIME, freezer)
-
-    yaml_path = write_yaml(f"""
-rules:
-  - name: yaml_rule
-    entity_ids: [sensor.was_yaml]
-    keep_days: {KEEP_DAYS}
-""")
-    await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
-
-    # Delete the file and reload — no rules should remain active
-    os.remove(yaml_path)
-    await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
-    await run_purge(hass)
-
-    # Nothing purged — no rules were active
-    assert count_states(hass, "sensor.was_yaml") > 0
+    assert count_states(hass, "sensor.disabled_target") > 0
 
 
 # ---------------------------------------------------------------------------
@@ -244,29 +167,23 @@ rules:
 async def test_invalid_yaml_syntax_reload_raises_and_preserves_rules(
     yaml_config: tuple[HomeAssistant, Any], freezer: Any
 ) -> None:
-    """A YAML parse error surfaces as a service failure; previous rules survive.
-
-    The reload service must not silently wipe the rule set on a typo — an
-    automation calling reload after templating a file needs to see the
-    failure. On error, the current rule set is preserved (reload is atomic).
-    """
-    hass, write_yaml = yaml_config
+    """A YAML parse error surfaces as a service failure; previous rules survive."""
+    hass, write_rules = yaml_config
 
     await set_state_at(hass, "sensor.kept_entity", "1", OLD_TIME, freezer)
     await set_state_at(hass, "sensor.other_entity", "2", OLD_TIME, freezer)
 
     # Seed a valid rule first so there is state to preserve
-    write_yaml(f"""
-rules:
-  - name: guard
-    entity_ids: [sensor.kept_entity]
-    keep_days: {KEEP_DAYS}
+    write_rules(f"""  rules:
+    - name: guard
+      entity_ids: [sensor.kept_entity]
+      keep_days: {KEEP_DAYS}
 """)
     await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
 
     # Now write a broken file and reload — the service call must raise
-    write_yaml("rules: [invalid: yaml: {{broken")
-    with pytest.raises(HomeAssistantError, match="YAML parse error"):
+    write_rules("  rules: [invalid: yaml: {{broken")
+    with pytest.raises(HomeAssistantError):
         await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
 
     # Rule from before the broken reload is still active
@@ -275,58 +192,31 @@ rules:
     assert count_states(hass, "sensor.other_entity") > 0
 
 
-async def test_missing_top_level_rules_key_reload_raises(
+async def test_invalid_rule_schema_reload_raises_and_preserves_rules(
     yaml_config: tuple[HomeAssistant, Any], freezer: Any
 ) -> None:
-    """A file without a 'rules:' key surfaces as a service failure."""
-    hass, write_yaml = yaml_config
+    """A schema error in a rule aborts the whole reload (atomic)."""
+    hass, write_rules = yaml_config
 
-    write_yaml("something_else: 1\n")
-    with pytest.raises(HomeAssistantError, match="must contain a top-level 'rules:'"):
+    await set_state_at(hass, "sensor.kept_entity", "1", OLD_TIME, freezer)
+
+    # Seed a valid rule first
+    write_rules(f"""  rules:
+    - name: guard
+      entity_ids: [sensor.kept_entity]
+      keep_days: {KEEP_DAYS}
+""")
+    await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
+
+    # Now attempt to reload with a rule that exceeds keep_days max
+    write_rules("""  rules:
+    - name: bad_rule
+      entity_ids: [sensor.kept_entity]
+      keep_days: 999999
+""")
+    with pytest.raises(HomeAssistantError):
         await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
 
-
-async def test_invalid_rule_schema_skips_bad_rule_keeps_good(
-    yaml_config: tuple[HomeAssistant, Any], freezer: Any
-) -> None:
-    """A rule with a schema error is skipped; other valid rules still run."""
-    hass, write_yaml = yaml_config
-
-    await set_state_at(hass, "sensor.good_target", "1", OLD_TIME, freezer)
-
-    write_yaml(f"""
-rules:
-  - name: bad_rule
-    keep_days: 999999   # exceeds max(365) — invalid
-    entity_ids: [sensor.should_not_matter]
-  - name: good_rule
-    entity_ids: [sensor.good_target]
-    keep_days: {KEEP_DAYS}
-""")
-
-    await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
+    # Prior valid rule is still active
     await run_purge(hass)
-
-    assert count_states(hass, "sensor.good_target") == 0
-
-
-async def test_missing_required_field_skips_rule(
-    yaml_config: tuple[HomeAssistant, Any], freezer: Any
-) -> None:
-    """A rule missing required keep_days is skipped without crashing."""
-    hass, write_yaml = yaml_config
-
-    await set_state_at(hass, "sensor.no_keep_days", "1", OLD_TIME, freezer)
-
-    write_yaml("""
-rules:
-  - name: missing_keep_days
-    entity_ids: [sensor.no_keep_days]
-    # keep_days intentionally omitted — should fail validation
-""")
-
-    await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
-    await run_purge(hass)
-
-    # No rule ran — entity untouched
-    assert count_states(hass, "sensor.no_keep_days") > 0
+    assert count_states(hass, "sensor.kept_entity") == 0

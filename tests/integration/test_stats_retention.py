@@ -267,45 +267,6 @@ async def test_stats_just_within_boundary_survive(
 
 
 # ---------------------------------------------------------------------------
-# Patch lifecycle: unload removes the patch
-# ---------------------------------------------------------------------------
-
-
-async def test_patch_removed_on_unload_stats_purged(
-    integration_entry: tuple[HomeAssistant, Any],
-) -> None:
-    """After unloading the integration the patch is gone; stats at T-10d are purged.
-
-    With the patch (stats_keep_days=30): T-10d stat survives (10 < 30).
-    Without the patch:                  T-10d stat is purged  (10 > purge_keep_days=5).
-    """
-    hass, entry = integration_entry
-
-    stat_id = "sensor.patch_test_meter"
-    ten_days_ago = NOW - timedelta(days=10)
-
-    insert_short_term_stat(hass, stat_id, ten_days_ago)
-    assert count_short_term_stats(hass, stat_id) > 0
-
-    # Confirm the patch works before unloading: stat survives a purge
-    await run_recorder_purge(hass)
-    assert count_short_term_stats(hass, stat_id) > 0, (
-        "Patch should have kept the T-10d stat alive"
-    )
-
-    # Unload the integration → patch is removed
-    await hass.config_entries.async_unload(entry.entry_id)
-    await hass.async_block_till_done()
-
-    # Now purge without the patch: T-10d is beyond purge_keep_days=5
-    await run_recorder_purge(hass)
-
-    assert count_short_term_stats(hass, stat_id) == 0, (
-        "Without the patch, T-10d stat should be purged (10 > purge_keep_days=5)"
-    )
-
-
-# ---------------------------------------------------------------------------
 # Long-term statistics are never purged by recorder.purge
 # ---------------------------------------------------------------------------
 

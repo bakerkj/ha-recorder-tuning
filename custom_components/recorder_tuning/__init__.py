@@ -6,19 +6,18 @@ from __future__ import annotations
 
 import fnmatch
 import logging
-import os
 import re
 from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
 import voluptuous as vol
-import yaml
 
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config import async_hass_config_yaml
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_change
+from homeassistant.helpers.typing import ConfigType
 
 from .const import (
     CONF_DEVICE_IDS,
@@ -42,17 +41,22 @@ from .const import (
     DOMAIN,
     MATCH_MODE_ALL,
     MATCH_MODE_ANY,
-    YAML_CONFIG_FILE,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-# Key used to stash the original purge function so we can restore it on unload
+# Key used to stash the original purge function (kept in hass.data for
+# symmetry with prior versions; no unload hook consumes it today).
 _ORIG_PURGE_FN_KEY = f"{DOMAIN}_original_purge_fn"
-# Cached stats_keep_days — written from the event loop (setup/reload), read
-# from the recorder executor thread by the patched closure. Dict reads are
-# atomic under the CPython GIL, so no lock is required.
-_STATS_KEEP_DAYS_KEY = f"{DOMAIN}_stats_keep_days"
+# Module-level cache of the current short-term stats retention. Written by
+# _apply_stats_patch (event loop) and read by the patched closure on the
+# recorder executor thread. A plain int read/assign is atomic under the
+# CPython GIL, so no lock is required.  Module-level (rather than
+# hass.data-keyed) so the wrapper closure survives test-instance changes:
+# the monkey-patch on the recorder module persists across pytest tests, but
+# each test creates a fresh hass — stashing the cache on hass.data would
+# leave the wrapper reading stale data in the next test.
+_STATS_KEEP_DAYS_CURRENT: int = DEFAULT_STATS_KEEP_DAYS
 # Attribute tag on our wrapper so we can recognise it on unload/reload and
 # avoid wrapping ourselves twice, or unwrapping someone else's patch.
 _WRAPPER_TAG = f"__{DOMAIN}_wrapped__"
@@ -67,13 +71,7 @@ _DRY_RUN_LOG_CAP = 25
 
 
 def _regex_pattern(value: str) -> str:
-    """Voluptuous validator: raise ``vol.Invalid`` if ``value`` isn't a valid regex.
-
-    Running this at YAML load time means a bad pattern surfaces as a rule-level
-    validation error (via ``_load_yaml_rules``'s "skipping rule[i]" path) and
-    is visible to the user when they call ``recorder_tuning.reload``, not
-    hours later when a scheduled purge runs.
-    """
+    """Voluptuous validator: raise ``vol.Invalid`` if ``value`` isn't a valid regex."""
     if not isinstance(value, str):
         raise vol.Invalid(f"regex must be a string, got {type(value).__name__}")
     try:
@@ -83,7 +81,23 @@ def _regex_pattern(value: str) -> str:
     return value
 
 
-# Voluptuous schema for a single rule loaded from YAML
+def parse_hhmm(value: str) -> time:
+    """Parse a ``HH:MM`` string into a ``time`` object."""
+    return datetime.strptime(value, "%H:%M").time()
+
+
+def _purge_time_validator(value: Any) -> str:
+    """Voluptuous validator: accept ``HH:MM`` strings."""
+    if not isinstance(value, str):
+        raise vol.Invalid(f"purge_time must be a string, got {type(value).__name__}")
+    try:
+        parse_hhmm(value)
+    except ValueError as err:
+        raise vol.Invalid(f"purge_time must be HH:MM (got {value!r}): {err}") from err
+    return value
+
+
+# Voluptuous schema for a single rule
 _RULE_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_RULE_NAME): str,
@@ -99,139 +113,54 @@ _RULE_SCHEMA = vol.Schema(
             [MATCH_MODE_ALL, MATCH_MODE_ANY]
         ),
         # Per-rule dry-run override. Absent (None) means the rule inherits the
-        # run-level setting (config-entry default, possibly overridden by the
-        # service call). Explicit true/false forces the rule's mode regardless
-        # of the run-level value — useful for leaving a newly-added rule in
-        # dry-run while the rest of the rule set runs live.
+        # top-level dry_run setting.
         vol.Optional(CONF_DRY_RUN, default=None): vol.Any(None, bool),
     }
 )
 
 
-def parse_hhmm(value: str) -> time:
-    """Parse a ``HH:MM`` string into a ``time`` object.
+# Top-level schema: recorder_tuning: block in configuration.yaml. Rules can
+# be supplied inline or via !include — HA's YAML loader resolves !include
+# before we ever see the dict.
+CONFIG_SCHEMA = vol.Schema(
+    {
+        DOMAIN: vol.Schema(
+            {
+                vol.Optional(
+                    CONF_PURGE_TIME, default=DEFAULT_PURGE_TIME
+                ): _purge_time_validator,
+                vol.Optional(
+                    CONF_STATS_KEEP_DAYS, default=DEFAULT_STATS_KEEP_DAYS
+                ): vol.All(int, vol.Range(min=1, max=365)),
+                vol.Optional(CONF_DRY_RUN, default=DEFAULT_DRY_RUN): bool,
+                vol.Optional(CONF_RULES, default=[]): [_RULE_SCHEMA],
+            }
+        )
+    },
+    extra=vol.ALLOW_EXTRA,
+)
 
-    Shared between the config flow (wraps ``ValueError`` into ``vol.Invalid``
-    for form validation) and the scheduler (logs a warning and falls back to
-    the default). No leading underscore because this is consumed across
-    module boundaries within the package.
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Set up Recorder Tuning from configuration.yaml.
+
+    The integration is YAML-only — there is no UI config flow. Users declare
+    all integration settings + purge rules under a top-level ``recorder_tuning:``
+    key in ``configuration.yaml``; rules are typically pulled in via
+    ``rules: !include recorder_tuning_rules.yaml``.
+
+    Returns True even when the integration key is absent so HA does not treat
+    the module as broken.
     """
-    return datetime.strptime(value, "%H:%M").time()
+    domain_config = config.get(DOMAIN)
+    if domain_config is None:
+        # Integration not configured — nothing to do.
+        return True
 
+    _apply_stats_patch(hass, domain_config[CONF_STATS_KEEP_DAYS])
 
-def _load_yaml_rules(hass: HomeAssistant) -> list[dict]:
-    """Load and validate rules from recorder_tuning.yaml.
-
-    Returns:
-        - ``[]`` if the file does not exist (legitimate "no rules configured"
-          state — the integration still sets up and is ready for a reload
-          once the file is created).
-        - The list of valid rules if the file parses. Individual rules that
-          fail schema validation are skipped with a WARNING; other valid
-          rules in the same file are still returned.
-
-    Raises:
-        HomeAssistantError — the file exists but is unreadable, contains
-        invalid YAML, or has the wrong top-level shape. The reload service
-        surfaces this to the caller so typos don't silently wipe the rule
-        set; setup catches it so a broken file doesn't block the
-        integration from loading.
-    """
-    yaml_path = hass.config.path(YAML_CONFIG_FILE)
-    if not os.path.isfile(yaml_path):
-        return []
-
-    try:
-        with open(yaml_path, encoding="utf-8") as fh:
-            raw = yaml.safe_load(fh)
-    except OSError as err:
-        raise HomeAssistantError(
-            f"recorder_tuning: could not read {yaml_path}: {err}"
-        ) from err
-    except yaml.YAMLError as err:
-        raise HomeAssistantError(
-            f"recorder_tuning: YAML parse error in {yaml_path}: {err}"
-        ) from err
-
-    if not isinstance(raw, dict) or CONF_RULES not in raw:
-        raise HomeAssistantError(
-            f"recorder_tuning: {yaml_path} must contain a top-level 'rules:' list"
-        )
-
-    if not isinstance(raw[CONF_RULES], list):
-        raise HomeAssistantError(
-            f"recorder_tuning: {yaml_path} — 'rules:' must be a YAML list"
-        )
-
-    rules: list[dict] = []
-    for i, rule_raw in enumerate(raw[CONF_RULES]):
-        try:
-            rules.append(_RULE_SCHEMA(rule_raw))
-        except vol.Invalid as err:
-            _LOGGER.warning(
-                "recorder_tuning: skipping rule[%d] in %s — validation error: %s",
-                i,
-                yaml_path,
-                err,
-            )
-
-    # Warn on duplicate rule names. Duplicates still run — the rule engine
-    # supports multiple rules matching the same entity — but identical names
-    # make log output ambiguous (which rule ran first? which failed?).
-    seen: set[str] = set()
-    duplicates: set[str] = set()
-    for rule in rules:
-        name = rule[CONF_RULE_NAME]
-        if name in seen:
-            duplicates.add(name)
-        else:
-            seen.add(name)
-    for name in sorted(duplicates):
-        _LOGGER.warning(
-            "recorder_tuning: rule name '%s' appears more than once in %s — "
-            "each instance runs, but logs will be ambiguous",
-            name,
-            yaml_path,
-        )
-
-    # Callers (async_setup_entry, async_service_reload) emit their own summary
-    # log with schedule/context — don't double-log the rule count here.
-    return rules
-
-
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Recorder Tuning from a config entry."""
-    hass.data.setdefault(DOMAIN, {})
-
-    stats_keep_days = entry.data.get(CONF_STATS_KEEP_DAYS, DEFAULT_STATS_KEEP_DAYS)
-    _apply_stats_patch(hass, stats_keep_days)
-
-    yaml_path = hass.config.path(YAML_CONFIG_FILE)
-    file_exists = await hass.async_add_executor_job(os.path.isfile, yaml_path)
-    try:
-        yaml_rules = await hass.async_add_executor_job(_load_yaml_rules, hass)
-    except HomeAssistantError as err:
-        # Broken YAML at startup must not prevent the integration from loading —
-        # the user can fix the file and call recorder_tuning.reload.
-        _LOGGER.error(
-            "recorder_tuning: YAML config is invalid at setup, starting with "
-            "no rules active: %s",
-            err,
-        )
-        yaml_rules = []
-    # Only nudge the user about the file when it actually doesn't exist. An
-    # explicit ``rules: []`` is a legitimate "stats retention only" setup and
-    # shouldn't get the "create the file" hint.
-    if not file_exists:
-        _LOGGER.info(
-            "recorder_tuning: no %s in config dir — no purge rules active. "
-            "Create the file and call recorder_tuning.reload to enable.",
-            YAML_CONFIG_FILE,
-        )
-
-    manager = RecorderTuningManager(hass, entry, yaml_rules)
-    hass.data[DOMAIN][entry.entry_id] = manager
-
+    manager = RecorderTuningManager(hass, domain_config)
+    hass.data.setdefault(DOMAIN, {})["manager"] = manager
     await manager.async_setup()
 
     hass.services.async_register(
@@ -243,51 +172,57 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_register(
         DOMAIN,
         "reload",
-        manager.async_service_reload,
+        _make_reload_handler(hass, manager),
         schema=vol.Schema({}),
     )
 
-    entry.async_on_unload(entry.add_update_listener(manager.async_reload))
-
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry."""
-    domain_data: dict = hass.data.get(DOMAIN, {})
-    manager: RecorderTuningManager | None = domain_data.pop(entry.entry_id, None)
-    if manager:
-        manager.async_unload()
+def _make_reload_handler(hass: HomeAssistant, manager: RecorderTuningManager):
+    """Build a reload service handler closed over ``hass`` and ``manager``.
 
-    # Restore the original purge function only if our wrapper is still the
-    # one installed. If something else has wrapped on top, leave it in place
-    # — unwrapping would drop their layer on the floor.
-    original_fn = domain_data.pop(_ORIG_PURGE_FN_KEY, None)
-    domain_data.pop(_STATS_KEEP_DAYS_KEY, None)
-    if original_fn is not None:
+    Reload re-reads configuration.yaml (including any ``!include`` rules file),
+    re-runs the integration's CONFIG_SCHEMA, and applies the validated config.
+    Any parse/schema error propagates as a ``HomeAssistantError`` so automations
+    calling reload can detect the failure. On error the previous rule set and
+    settings survive unchanged (reload is atomic).
+    """
+
+    async def _reload(call: ServiceCall) -> None:
         try:
-            from homeassistant.components.recorder import purge as recorder_purge  # noqa: PLC0415
-        except ImportError as err:
-            _LOGGER.warning(
-                "recorder_tuning: could not restore purge function: %s", err
-            )
-        else:
-            current = getattr(
-                recorder_purge, "find_short_term_statistics_to_purge", None
-            )
-            if current is not None and getattr(current, _WRAPPER_TAG, False):
-                recorder_purge.find_short_term_statistics_to_purge = original_fn
-                _LOGGER.info("recorder_tuning: short-term stats patch removed")
-            else:
-                _LOGGER.warning(
-                    "recorder_tuning: find_short_term_statistics_to_purge has "
-                    "been re-wrapped by something else — leaving it alone"
-                )
+            raw = await async_hass_config_yaml(hass)
+        except HomeAssistantError:
+            raise
+        except Exception as err:
+            raise HomeAssistantError(
+                f"recorder_tuning: failed to read configuration.yaml: {err}"
+            ) from err
 
-    for service in ("run_purge_now", "reload"):
-        hass.services.async_remove(DOMAIN, service)
+        if DOMAIN not in raw:
+            raise HomeAssistantError(
+                f"recorder_tuning: reload found no {DOMAIN}: block in configuration.yaml"
+            )
 
-    return True
+        try:
+            validated = CONFIG_SCHEMA(raw)
+        except vol.Invalid as err:
+            raise HomeAssistantError(
+                f"recorder_tuning: invalid configuration: {err}"
+            ) from err
+
+        new_domain_config = validated[DOMAIN]
+
+        # Reapply the short-term stats retention first — the cached value is
+        # read by the recorder executor on the next purge.
+        _apply_stats_patch(hass, new_domain_config[CONF_STATS_KEEP_DAYS])
+        manager.update_config(new_domain_config)
+        _LOGGER.info(
+            "recorder_tuning: reloaded from configuration.yaml — %d rule(s)",
+            len(manager.rules),
+        )
+
+    return _reload
 
 
 async def _query_row_counts(
@@ -335,21 +270,17 @@ async def _query_row_counts(
 def _apply_stats_patch(hass: HomeAssistant, stats_keep_days: int) -> None:
     """Monkey-patch recorder purge to use a longer cutoff for short-term statistics.
 
-    Must be called from the event loop (on setup and on config-entry reload).
-    The replacement closure reads the current retention from
-    ``hass.data[DOMAIN][_STATS_KEEP_DAYS_KEY]``, so config changes take effect
-    on the next recorder purge without rewrapping.
+    Must be called from the event loop (on setup and on reload). The
+    replacement closure reads the current retention from the module-level
+    ``_STATS_KEEP_DAYS_CURRENT`` variable, so config changes take effect on
+    the next recorder purge without rewrapping.
     """
-    domain_data = hass.data.setdefault(DOMAIN, {})
-    # Update the cached retention unconditionally — covers both first-apply
-    # and reload paths.
-    domain_data[_STATS_KEEP_DAYS_KEY] = stats_keep_days
+    global _STATS_KEEP_DAYS_CURRENT  # noqa: PLW0603
+    # Update the cached retention unconditionally — covers first-apply,
+    # reload, and the "wrapper already installed from a previous run" path.
+    _STATS_KEEP_DAYS_CURRENT = stats_keep_days
 
-    if _ORIG_PURGE_FN_KEY in domain_data:
-        _LOGGER.debug(
-            "recorder_tuning: stats retention updated to %d days", stats_keep_days
-        )
-        return
+    domain_data = hass.data.setdefault(DOMAIN, {})
 
     try:
         from homeassistant.components.recorder import purge as recorder_purge  # noqa: PLC0415
@@ -369,8 +300,9 @@ def _apply_stats_patch(hass: HomeAssistant, stats_keep_days: int) -> None:
         return
 
     if getattr(current_fn, _WRAPPER_TAG, False):
-        # Our wrapper is already installed (stale hass.data or re-setup after
-        # a partial teardown). Don't wrap it a second time.
+        # Our wrapper is already installed (e.g., after a test suite reuses
+        # the recorder module across tests, or after a reload). The module
+        # variable updated above is enough — don't wrap it a second time.
         _LOGGER.debug(
             "recorder_tuning: wrapper already present, reusing it (retention %d days)",
             stats_keep_days,
@@ -382,7 +314,7 @@ def _apply_stats_patch(hass: HomeAssistant, stats_keep_days: int) -> None:
     def patched_find_short_term_statistics_to_purge(
         purge_before: datetime, max_bind_vars: int
     ) -> Any:
-        keep_days = domain_data.get(_STATS_KEEP_DAYS_KEY, DEFAULT_STATS_KEEP_DAYS)
+        keep_days = _STATS_KEEP_DAYS_CURRENT
         stats_purge_before = datetime.now(timezone.utc) - timedelta(days=keep_days)
         # Never purge more aggressively than the recorder wants
         effective_before = min(purge_before, stats_purge_before)
@@ -409,16 +341,15 @@ class RecorderTuningManager:
     def __init__(
         self,
         hass: HomeAssistant,
-        entry: ConfigEntry,
-        rules: list[dict],
+        config: dict,
     ) -> None:
         self.hass = hass
-        self.entry = entry
-        self.rules: list[dict] = rules
+        self.config: dict = config
+        self.rules: list[dict] = list(config.get(CONF_RULES, []))
         self._unsub_timer: Any = None
         # HH:MM string the timer is currently scheduled for. Lets us skip the
-        # cancel/reinstall cycle when an options change doesn't touch the
-        # schedule — important when the change lands right before a firing.
+        # cancel/reinstall cycle when a reload doesn't touch the schedule —
+        # important when the change lands right before a firing.
         self._scheduled_at: str | None = None
         # Names of rules that warned about matching zero entities since the
         # last reload. Further zero-match runs for the same rule log at DEBUG
@@ -432,18 +363,30 @@ class RecorderTuningManager:
         _LOGGER.info(
             "recorder_tuning: loaded %d rule(s), scheduled at %s",
             len(self.rules),
-            self.entry.data.get(CONF_PURGE_TIME, DEFAULT_PURGE_TIME),
+            self.config.get(CONF_PURGE_TIME, DEFAULT_PURGE_TIME),
         )
+
+    def update_config(self, new_config: dict) -> None:
+        """Swap in a new validated config block (called by the reload handler).
+
+        Replaces rules, updates schedule (no-op if HH:MM unchanged), and
+        clears the zero-match warn-suppression set so each rule gets a
+        fresh chance to warn once.
+        """
+        self.config = new_config
+        self.rules = list(new_config.get(CONF_RULES, []))
+        self._warned_empty_rules.clear()
+        self._schedule_purge()
 
     def _schedule_purge(self) -> None:
         """Install (or update) the daily time-based trigger.
 
-        If the scheduled HH:MM hasn't changed, do nothing — an options change
-        that touches only dry_run or stats_keep_days must not cancel a pending
-        firing. That matters when an update lands within a minute of the
-        scheduled time: cancelling the timer would lose the day's purge.
+        If the scheduled HH:MM hasn't changed, do nothing — a reload that
+        doesn't touch purge_time must not cancel a pending firing. That
+        matters when a reload lands within a minute of the scheduled time:
+        cancelling the timer would lose the day's purge.
         """
-        purge_time_str = self.entry.data.get(CONF_PURGE_TIME, DEFAULT_PURGE_TIME)
+        purge_time_str = self.config.get(CONF_PURGE_TIME, DEFAULT_PURGE_TIME)
 
         if self._unsub_timer is not None and self._scheduled_at == purge_time_str:
             return
@@ -473,7 +416,7 @@ class RecorderTuningManager:
 
     async def _async_run_purge(self, now: datetime) -> None:
         """Run all enabled purge rules."""
-        dry_run = self.entry.data.get(CONF_DRY_RUN, DEFAULT_DRY_RUN)
+        dry_run = self.config.get(CONF_DRY_RUN, DEFAULT_DRY_RUN)
         _LOGGER.info(
             "recorder_tuning: starting scheduled purge run%s",
             " [DRY RUN]" if dry_run else "",
@@ -484,13 +427,13 @@ class RecorderTuningManager:
         """Service handler: run purge immediately.
 
         If dry_run is explicitly provided in the service call it overrides the
-        config entry setting.  If omitted, the config entry value is used so
-        that the service call behaves the same as the scheduled nightly run.
+        configured setting. If omitted, the configured value is used so that
+        the service call behaves the same as the scheduled nightly run.
         """
         if CONF_DRY_RUN in call.data:
             dry_run = call.data[CONF_DRY_RUN]
         else:
-            dry_run = self.entry.data.get(CONF_DRY_RUN, DEFAULT_DRY_RUN)
+            dry_run = self.config.get(CONF_DRY_RUN, DEFAULT_DRY_RUN)
         if dry_run:
             _LOGGER.info(
                 "recorder_tuning: dry-run triggered via service — no data will be deleted"
@@ -585,11 +528,11 @@ class RecorderTuningManager:
     ) -> None:
         """Query and log which rows will be (or would be) removed for a rule.
 
-        Called before every purge, regardless of dry-run mode.  The log prefix
+        Called before every purge, regardless of dry-run mode. The log prefix
         is ``[DRY RUN]`` or ``[PURGE]`` so lines are easy to grep.
 
         In dry-run mode the per-entity row details are logged at INFO so they
-        are visible by default.  In live mode they are logged at DEBUG to avoid
+        are visible by default. In live mode they are logged at DEBUG to avoid
         flooding the log on large instances — the INFO summary line (total rows
         across all matched entities) is always emitted in both modes.
 
@@ -796,40 +739,6 @@ class RecorderTuningManager:
 
         # Sort for deterministic batch order, log order, and dry-run diffs.
         return sorted(resolved)
-
-    async def async_service_reload(self, call: ServiceCall) -> None:
-        """Service handler: reload rules from the YAML file.
-
-        Raises ``HomeAssistantError`` if the file is present but unreadable,
-        malformed, or has the wrong shape — so automations that call reload
-        can detect the failure. On error the existing rule set is preserved
-        (the reload is atomic: all-or-nothing).
-        """
-        yaml_rules = await self.hass.async_add_executor_job(_load_yaml_rules, self.hass)
-        self.rules = yaml_rules
-        # Rule set replaced → reset zero-match warning suppression so each
-        # rule gets a fresh chance to warn once.
-        self._warned_empty_rules.clear()
-        _LOGGER.info(
-            "recorder_tuning: reloaded %d rule(s) from %s",
-            len(self.rules),
-            YAML_CONFIG_FILE,
-        )
-
-    async def async_reload(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
-        """Handle config entry updates (schedule change, stats_keep_days change).
-
-        ``hass`` and ``entry`` are required by HA's update-listener contract
-        (``entry.add_update_listener``). HA mutates ``entry`` in place, so
-        it *is* ``self.entry`` — reading either gives the same values — but
-        we keep the args rather than referencing ``self`` to match the
-        listener signature HA documents.
-        """
-        self._schedule_purge()
-        _apply_stats_patch(
-            hass, entry.data.get(CONF_STATS_KEEP_DAYS, DEFAULT_STATS_KEEP_DAYS)
-        )
-        _LOGGER.info("recorder_tuning: reloaded with updated config")
 
     def async_unload(self) -> None:
         """Cancel the scheduled timer."""
