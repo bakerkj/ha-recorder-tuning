@@ -236,6 +236,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 vol.Optional(CONF_DRY_RUN): bool,
                 vol.Optional(CONF_RULE_NAMES): vol.All([str], vol.Length(min=1)),
                 vol.Optional(CONF_HA_RECORDER_PURGE): bool,
+                vol.Optional(CONF_KEEP_DAYS): vol.All(int, vol.Range(min=1, max=365)),
             }
         ),
     )
@@ -505,6 +506,10 @@ class RecorderTuningManager:
         with matching ``name``. Unknown names are logged as a warning but do
         not abort the call.
 
+        ``keep_days`` (optional int 1-365) overrides the ``keep_days`` on
+        every rule that runs in this call. Does not persist — the next
+        scheduled run uses the YAML-configured value again.
+
         Unlike the scheduled nightly run, the trailing global ``recorder.purge``
         call is **skipped by default** on a manual invocation — the common use
         case is testing one or more rules, and the global sweep is slow enough
@@ -517,12 +522,19 @@ class RecorderTuningManager:
         else:
             dry_run = self.config.get(CONF_DRY_RUN, DEFAULT_DRY_RUN)
 
+        keep_days_override = call.data.get(CONF_KEEP_DAYS)
+
         requested_names = call.data.get(CONF_RULE_NAMES)
         rules_arg: list[dict] | None = None
         # Manual-run default: skip the global recorder.purge. rule_names and
         # the explicit opt-in ``ha_recorder_purge`` both flow through this
         # single variable so _execute_all_rules sees exactly what to do.
         trailing_arg: bool = False
+        override_suffix = (
+            f" (keep_days override: {keep_days_override})"
+            if keep_days_override is not None
+            else ""
+        )
 
         if requested_names:
             # Case-insensitive match: preserve the user's original casing for
@@ -551,9 +563,10 @@ class RecorderTuningManager:
             # rule_names always skips the trailing purge (trailing_arg already False)
             kind = "dry-run" if dry_run else "purge"
             _LOGGER.info(
-                "recorder_tuning: %s triggered for specific rule(s) via service: %s",
+                "recorder_tuning: %s triggered for specific rule(s) via service: %s%s",
                 kind,
                 sorted(r[CONF_RULE_NAME] for r in rules_arg),
+                override_suffix,
             )
         else:
             # Explicit opt-in to the global sweep — only honoured when no
@@ -561,14 +574,25 @@ class RecorderTuningManager:
             trailing_arg = bool(call.data.get(CONF_HA_RECORDER_PURGE, False))
             if dry_run:
                 _LOGGER.info(
-                    "recorder_tuning: dry-run triggered via service — no data will be deleted%s",
+                    "recorder_tuning: dry-run triggered via service — no data will be deleted%s%s",
                     " (includes global recorder.purge)" if trailing_arg else "",
+                    override_suffix,
                 )
             else:
                 _LOGGER.info(
-                    "recorder_tuning: manual purge triggered via service%s",
+                    "recorder_tuning: manual purge triggered via service%s%s",
                     " (includes global recorder.purge)" if trailing_arg else "",
+                    override_suffix,
                 )
+
+        if keep_days_override is not None:
+            # Shallow-copy each rule with the override applied. We use
+            # self.rules when rules_arg is None so the override propagates to
+            # whichever rules actually execute.
+            source = rules_arg if rules_arg is not None else self.rules
+            rules_arg = [
+                {**rule, CONF_KEEP_DAYS: keep_days_override} for rule in source
+            ]
 
         await self._execute_all_rules(
             dry_run=dry_run, rules=rules_arg, run_trailing_purge=trailing_arg

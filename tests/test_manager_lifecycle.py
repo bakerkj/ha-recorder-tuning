@@ -510,6 +510,70 @@ async def test_run_purge_now_rule_names_match_is_case_insensitive():
 
 
 @pytest.mark.asyncio
+async def test_run_purge_now_keep_days_override_applied_to_rule():
+    """keep_days service param overrides the rule's configured keep_days."""
+    hass, manager = _make_manager_with_rules(
+        [{"name": "rule_a", "entity_ids": ["sensor.a"], "keep_days": 14}]
+    )
+
+    call = MagicMock()
+    call.data = {"rule_names": ["rule_a"], "keep_days": 1}
+
+    seen_keep_days = []
+
+    async def fake_log_plan(rule_name, entity_ids, keep_days, dry_run=False):
+        seen_keep_days.append(keep_days)
+
+    with patch.object(
+        manager, "_resolve_entities", side_effect=lambda rule, reg: rule["entity_ids"]
+    ):
+        with patch.object(manager, "_log_purge_plan", side_effect=fake_log_plan):
+            with patch(
+                "custom_components.recorder_tuning.er.async_get",
+                return_value=MagicMock(),
+            ):
+                await manager.async_run_purge_now(call)
+
+    assert seen_keep_days == [1]
+    # Verify the service-call didn't mutate the manager's rules in place
+    assert manager.rules[0]["keep_days"] == 14
+
+
+@pytest.mark.asyncio
+async def test_run_purge_now_keep_days_override_applies_to_all_rules_when_no_filter():
+    """Without rule_names, the override applies to every rule in the run."""
+    hass, manager = _make_manager_with_rules(
+        [
+            {"name": "rule_a", "entity_ids": ["sensor.a"], "keep_days": 14},
+            {"name": "rule_b", "entity_ids": ["sensor.b"], "keep_days": 30},
+        ]
+    )
+
+    call = MagicMock()
+    call.data = {"keep_days": 3}
+
+    seen_keep_days: list[int] = []
+
+    async def fake_log_plan(rule_name, entity_ids, keep_days, dry_run=False):
+        seen_keep_days.append(keep_days)
+
+    with patch.object(
+        manager, "_resolve_entities", side_effect=lambda rule, reg: rule["entity_ids"]
+    ):
+        with patch.object(manager, "_log_purge_plan", side_effect=fake_log_plan):
+            with patch(
+                "custom_components.recorder_tuning.er.async_get",
+                return_value=MagicMock(),
+            ):
+                await manager.async_run_purge_now(call)
+
+    assert seen_keep_days == [3, 3]
+    # Both original rules still have their configured keep_days
+    assert manager.rules[0]["keep_days"] == 14
+    assert manager.rules[1]["keep_days"] == 30
+
+
+@pytest.mark.asyncio
 async def test_run_purge_now_rule_names_skips_trailing_global_purge():
     """Filtered runs must not trigger the trailing recorder.purge sweep."""
     hass, manager = _make_manager_with_rules(
