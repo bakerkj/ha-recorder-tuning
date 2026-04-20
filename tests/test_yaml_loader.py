@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from homeassistant.exceptions import HomeAssistantError
 
 
 def _hass_with_config_dir(config_dir: Path) -> MagicMock:
@@ -30,51 +31,61 @@ def _write_yaml(config_dir: Path, body: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Missing / empty / unreadable file
+# Missing file is legitimate — returns empty list, no error
 # ---------------------------------------------------------------------------
 
 
-def test_missing_file_returns_none(tmp_path):
+def test_missing_file_returns_empty(tmp_path):
     from custom_components.recorder_tuning import _load_yaml_rules
 
-    assert _load_yaml_rules(_hass_with_config_dir(tmp_path)) is None
+    assert _load_yaml_rules(_hass_with_config_dir(tmp_path)) == []
 
 
-def test_empty_file_returns_none(tmp_path, caplog):
+# ---------------------------------------------------------------------------
+# File present but malformed — must raise HomeAssistantError so the reload
+# service surfaces the failure. Setup catches and falls back to empty.
+# ---------------------------------------------------------------------------
+
+
+def test_empty_file_raises(tmp_path):
     from custom_components.recorder_tuning import _load_yaml_rules
 
     _write_yaml(tmp_path, "")
-    assert _load_yaml_rules(_hass_with_config_dir(tmp_path)) is None
-    assert "must contain a top-level 'rules:'" in caplog.text
+    with pytest.raises(HomeAssistantError, match="must contain a top-level 'rules:'"):
+        _load_yaml_rules(_hass_with_config_dir(tmp_path))
 
 
-def test_top_level_not_a_mapping_returns_none(tmp_path, caplog):
+def test_top_level_not_a_mapping_raises(tmp_path):
     from custom_components.recorder_tuning import _load_yaml_rules
 
     _write_yaml(tmp_path, "- just_a_list\n- of_strings\n")
-    assert _load_yaml_rules(_hass_with_config_dir(tmp_path)) is None
-    assert "must contain a top-level 'rules:'" in caplog.text
+    with pytest.raises(HomeAssistantError, match="must contain a top-level 'rules:'"):
+        _load_yaml_rules(_hass_with_config_dir(tmp_path))
 
 
-def test_missing_rules_key_returns_none(tmp_path, caplog):
+def test_missing_rules_key_raises(tmp_path):
     from custom_components.recorder_tuning import _load_yaml_rules
 
     _write_yaml(tmp_path, "some_other_key: value\n")
-    assert _load_yaml_rules(_hass_with_config_dir(tmp_path)) is None
-    assert "must contain a top-level 'rules:'" in caplog.text
+    with pytest.raises(HomeAssistantError, match="must contain a top-level 'rules:'"):
+        _load_yaml_rules(_hass_with_config_dir(tmp_path))
 
 
-# ---------------------------------------------------------------------------
-# Invalid YAML syntax
-# ---------------------------------------------------------------------------
+def test_rules_as_mapping_not_list_raises(tmp_path):
+    """`rules:` must be a YAML list, not a mapping."""
+    from custom_components.recorder_tuning import _load_yaml_rules
+
+    _write_yaml(tmp_path, "rules:\n  foo: 1\n  bar: 2\n")
+    with pytest.raises(HomeAssistantError, match="'rules:' must be a YAML list"):
+        _load_yaml_rules(_hass_with_config_dir(tmp_path))
 
 
-def test_bad_yaml_syntax_returns_none(tmp_path, caplog):
+def test_bad_yaml_syntax_raises(tmp_path):
     from custom_components.recorder_tuning import _load_yaml_rules
 
     _write_yaml(tmp_path, "rules:\n  - name: broken\n   keep_days: 3\n")  # bad indent
-    assert _load_yaml_rules(_hass_with_config_dir(tmp_path)) is None
-    assert "YAML parse error" in caplog.text
+    with pytest.raises(HomeAssistantError, match="YAML parse error"):
+        _load_yaml_rules(_hass_with_config_dir(tmp_path))
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +139,6 @@ rules:
     )
 
     rules = _load_yaml_rules(_hass_with_config_dir(tmp_path))
-    assert rules is not None
     assert [r["name"] for r in rules] == ["first", "second"]
     assert rules[0]["entity_ids"] == ["sensor.a"]
     assert rules[1]["entity_globs"] == ["sensor.frigate_*"]
@@ -156,7 +166,6 @@ rules:
     )
 
     rules = _load_yaml_rules(_hass_with_config_dir(tmp_path))
-    assert rules is not None
     assert [r["name"] for r in rules] == ["good", "also_good"]
     assert "skipping rule[1]" in caplog.text
 
@@ -177,7 +186,6 @@ rules:
     )
 
     rules = _load_yaml_rules(_hass_with_config_dir(tmp_path))
-    assert rules is not None
     assert [r["name"] for r in rules] == ["ok"]
 
 

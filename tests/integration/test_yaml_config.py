@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.recorder_tuning.const import (
     DOMAIN,
@@ -240,21 +241,49 @@ rules:
 # ---------------------------------------------------------------------------
 
 
-async def test_invalid_yaml_syntax_results_in_zero_rules(
+async def test_invalid_yaml_syntax_reload_raises_and_preserves_rules(
     yaml_config: tuple[HomeAssistant, Any], freezer: Any
 ) -> None:
-    """A YAML parse error is logged and leaves zero rules active."""
+    """A YAML parse error surfaces as a service failure; previous rules survive.
+
+    The reload service must not silently wipe the rule set on a typo — an
+    automation calling reload after templating a file needs to see the
+    failure. On error, the current rule set is preserved (reload is atomic).
+    """
     hass, write_yaml = yaml_config
 
-    await set_state_at(hass, "sensor.safe_entity", "1", OLD_TIME, freezer)
+    await set_state_at(hass, "sensor.kept_entity", "1", OLD_TIME, freezer)
+    await set_state_at(hass, "sensor.other_entity", "2", OLD_TIME, freezer)
 
-    write_yaml("rules: [invalid: yaml: {{broken")
-
+    # Seed a valid rule first so there is state to preserve
+    write_yaml(f"""
+rules:
+  - name: guard
+    entity_ids: [sensor.kept_entity]
+    keep_days: {KEEP_DAYS}
+""")
     await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
-    await run_purge(hass)
 
-    # No rule was loaded — entity untouched
-    assert count_states(hass, "sensor.safe_entity") > 0
+    # Now write a broken file and reload — the service call must raise
+    write_yaml("rules: [invalid: yaml: {{broken")
+    with pytest.raises(HomeAssistantError, match="YAML parse error"):
+        await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
+
+    # Rule from before the broken reload is still active
+    await run_purge(hass)
+    assert count_states(hass, "sensor.kept_entity") == 0
+    assert count_states(hass, "sensor.other_entity") > 0
+
+
+async def test_missing_top_level_rules_key_reload_raises(
+    yaml_config: tuple[HomeAssistant, Any], freezer: Any
+) -> None:
+    """A file without a 'rules:' key surfaces as a service failure."""
+    hass, write_yaml = yaml_config
+
+    write_yaml("something_else: 1\n")
+    with pytest.raises(HomeAssistantError, match="must contain a top-level 'rules:'"):
+        await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
 
 
 async def test_invalid_rule_schema_skips_bad_rule_keeps_good(

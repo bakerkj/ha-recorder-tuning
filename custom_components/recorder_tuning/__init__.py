@@ -16,6 +16,7 @@ import yaml
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_change
 
@@ -77,32 +78,49 @@ _RULE_SCHEMA = vol.Schema(
 )
 
 
-def _load_yaml_rules(hass: HomeAssistant) -> list[dict] | None:
-    """Load and validate rules from recorder_tuning.yaml if it exists.
+def _load_yaml_rules(hass: HomeAssistant) -> list[dict]:
+    """Load and validate rules from recorder_tuning.yaml.
 
-    Returns the validated rule list, or ``None`` if the file is missing
-    or unreadable / malformed. The caller treats ``None`` as "no rules
-    configured" — the integration is YAML-only.
+    Returns:
+        - ``[]`` if the file does not exist (legitimate "no rules configured"
+          state — the integration still sets up and is ready for a reload
+          once the file is created).
+        - The list of valid rules if the file parses. Individual rules that
+          fail schema validation are skipped with a WARNING; other valid
+          rules in the same file are still returned.
+
+    Raises:
+        HomeAssistantError — the file exists but is unreadable, contains
+        invalid YAML, or has the wrong top-level shape. The reload service
+        surfaces this to the caller so typos don't silently wipe the rule
+        set; setup catches it so a broken file doesn't block the
+        integration from loading.
     """
     yaml_path = hass.config.path(YAML_CONFIG_FILE)
     if not os.path.isfile(yaml_path):
-        return None
+        return []
 
     try:
         with open(yaml_path, encoding="utf-8") as fh:
             raw = yaml.safe_load(fh)
     except OSError as err:
-        _LOGGER.error("recorder_tuning: could not read %s: %s", yaml_path, err)
-        return None
+        raise HomeAssistantError(
+            f"recorder_tuning: could not read {yaml_path}: {err}"
+        ) from err
     except yaml.YAMLError as err:
-        _LOGGER.error("recorder_tuning: YAML parse error in %s: %s", yaml_path, err)
-        return None
+        raise HomeAssistantError(
+            f"recorder_tuning: YAML parse error in {yaml_path}: {err}"
+        ) from err
 
     if not isinstance(raw, dict) or CONF_RULES not in raw:
-        _LOGGER.error(
-            "recorder_tuning: %s must contain a top-level 'rules:' list", yaml_path
+        raise HomeAssistantError(
+            f"recorder_tuning: {yaml_path} must contain a top-level 'rules:' list"
         )
-        return None
+
+    if not isinstance(raw[CONF_RULES], list):
+        raise HomeAssistantError(
+            f"recorder_tuning: {yaml_path} — 'rules:' must be a YAML list"
+        )
 
     rules: list[dict] = []
     for i, rule_raw in enumerate(raw[CONF_RULES]):
@@ -127,14 +145,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     stats_keep_days = entry.data.get(CONF_STATS_KEEP_DAYS, DEFAULT_STATS_KEEP_DAYS)
     _apply_stats_patch(hass, stats_keep_days)
 
-    yaml_rules = await hass.async_add_executor_job(_load_yaml_rules, hass)
-    if yaml_rules is None:
-        _LOGGER.info(
-            "recorder_tuning: no %s in config dir — no purge rules active. "
-            "Create the file and call recorder_tuning.reload to enable.",
-            YAML_CONFIG_FILE,
+    try:
+        yaml_rules = await hass.async_add_executor_job(_load_yaml_rules, hass)
+    except HomeAssistantError as err:
+        # Broken YAML at startup must not prevent the integration from loading —
+        # the user can fix the file and call recorder_tuning.reload.
+        _LOGGER.error(
+            "recorder_tuning: YAML config is invalid at setup, starting with "
+            "no rules active: %s",
+            err,
         )
         yaml_rules = []
+    if not yaml_rules:
+        _LOGGER.info(
+            "recorder_tuning: no active rules. Edit %s in the config dir and "
+            "call recorder_tuning.reload to enable.",
+            YAML_CONFIG_FILE,
+        )
 
     manager = RecorderTuningManager(hass, entry, yaml_rules)
     hass.data[DOMAIN][entry.entry_id] = manager
@@ -606,21 +633,20 @@ class RecorderTuningManager:
         return sorted(resolved)
 
     async def async_service_reload(self, call: ServiceCall) -> None:
-        """Service handler: reload rules from the YAML file."""
+        """Service handler: reload rules from the YAML file.
+
+        Raises ``HomeAssistantError`` if the file is present but unreadable,
+        malformed, or has the wrong shape — so automations that call reload
+        can detect the failure. On error the existing rule set is preserved
+        (the reload is atomic: all-or-nothing).
+        """
         yaml_rules = await self.hass.async_add_executor_job(_load_yaml_rules, self.hass)
-        if yaml_rules is None:
-            self.rules = []
-            _LOGGER.info(
-                "recorder_tuning: %s missing or invalid — 0 rules active",
-                YAML_CONFIG_FILE,
-            )
-        else:
-            self.rules = yaml_rules
-            _LOGGER.info(
-                "recorder_tuning: reloaded %d rule(s) from %s",
-                len(self.rules),
-                YAML_CONFIG_FILE,
-            )
+        self.rules = yaml_rules
+        _LOGGER.info(
+            "recorder_tuning: reloaded %d rule(s) from %s",
+            len(self.rules),
+            YAML_CONFIG_FILE,
+        )
 
     async def async_reload(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         """Handle config entry updates (schedule change, stats_keep_days change)."""
