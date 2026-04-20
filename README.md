@@ -121,25 +121,44 @@ one rule, **every matching rule runs** and the most aggressive `keep_days`
 (lowest value) determines how much history is kept. Rule order does not affect
 the result.
 
+Within a single rule, each _present_ positive selector becomes a predicate. How
+those predicates combine is controlled by `match_mode`:
+
+- `match_mode: all` (default) — the entity must satisfy **every** present
+  selector. Adding a selector narrows the rule. This is what the rule name
+  usually implies ("ESPHome diagnostic sensors" means entities that are ESPHome
+  **and** look like diagnostics).
+- `match_mode: any` — the entity matches if **any** selector matches (union).
+  Useful for "this list of specific entities, plus anything matching this
+  pattern."
+
+Within a single selector, list items still OR together — e.g.
+`integration_filter: [esphome, mqtt]` means the platform is `esphome` or `mqtt`;
+`entity_regex_include: [p1, p2]` means any pattern matches.
+
+`entity_regex_exclude` is always applied **after** positive selectors and
+subtracts from the final set, regardless of `match_mode`.
+
 ### Rule fields
 
-| Field                  | Type            | Required  | Description                                                                                                                       |
-| ---------------------- | --------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `name`                 | string          | yes       | Identifier for the rule (free-form).                                                                                              |
-| `keep_days`            | int, 1-365      | yes       | Days of recorder history to retain for matched entities.                                                                          |
-| `enabled`              | bool            | no (true) | Set to `false` to suspend a rule without deleting it.                                                                             |
-| `integration_filter`   | list of strings | no        | Integration/platform names, e.g. `[frigate, esphome]`. All entities from those integrations are included.                         |
-| `device_ids`           | list of strings | no        | Device IDs. All entities under each device (including disabled ones) are included. Find IDs at Settings → Devices → (device) URL. |
-| `entity_ids`           | list of strings | no        | Explicit entity IDs.                                                                                                              |
-| `entity_globs`         | list of strings | no        | Glob patterns matched against all registered entity IDs, e.g. `sensor.frigate_*_fps`.                                             |
-| `entity_regex_include` | list of regexes | no        | Entities matching any pattern are added to the candidate set.                                                                     |
-| `entity_regex_exclude` | list of regexes | no        | Entities matching any pattern are removed from the candidate set after positive selectors have run.                               |
+| Field                  | Type            | Required   | Description                                                                                                                       |
+| ---------------------- | --------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `name`                 | string          | yes        | Identifier for the rule (free-form).                                                                                              |
+| `keep_days`            | int, 1-365      | yes        | Days of recorder history to retain for matched entities.                                                                          |
+| `enabled`              | bool            | no (true)  | Set to `false` to suspend a rule without deleting it.                                                                             |
+| `match_mode`           | `all` \| `any`  | no (`all`) | How positive selectors combine within the rule. `all` = intersection; `any` = union.                                              |
+| `integration_filter`   | list of strings | no         | Integration/platform names, e.g. `[frigate, esphome]`.                                                                            |
+| `device_ids`           | list of strings | no         | Device IDs. All entities under each device (including disabled ones) are included. Find IDs at Settings → Devices → (device) URL. |
+| `entity_ids`           | list of strings | no         | Explicit entity IDs.                                                                                                              |
+| `entity_globs`         | list of strings | no         | Glob patterns matched against all registered entity IDs, e.g. `sensor.frigate_*_fps`.                                             |
+| `entity_regex_include` | list of regexes | no         | Entities matching any pattern.                                                                                                    |
+| `entity_regex_exclude` | list of regexes | no         | Entities matching any pattern are removed from the candidate set after positive selectors have run.                               |
 
 At least one positive selector (`integration_filter`, `device_ids`,
 `entity_ids`, `entity_globs`, or `entity_regex_include`) is required per rule.
 Invalid rules (missing `name`, missing `keep_days`, out-of-range `keep_days`,
-bad regex, etc.) are skipped individually — other valid rules in the same file
-still run.
+bad regex, unknown `match_mode`, etc.) are skipped individually — other valid
+rules in the same file still run.
 
 ## Services
 

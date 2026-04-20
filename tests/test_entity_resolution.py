@@ -16,7 +16,10 @@ from custom_components.recorder_tuning.const import (
     CONF_ENTITY_REGEX_INCLUDE,
     CONF_INTEGRATION_FILTER,
     CONF_KEEP_DAYS,
+    CONF_MATCH_MODE,
     CONF_RULE_NAME,
+    MATCH_MODE_ALL,
+    MATCH_MODE_ANY,
 )
 
 
@@ -255,11 +258,12 @@ def test_resolve_regex_exclude_can_remove_all():
 
 
 # ---------------------------------------------------------------------------
-# Combined selectors — union of positives, then exclude
+# Combined selectors — "any" mode (union of positives, then exclude)
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_combined_selectors():
+def test_resolve_combined_selectors_any_mode_unions():
+    """Opt-in any mode keeps the legacy union-of-selectors behaviour."""
     manager = _make_manager()
     reg = _make_registry(
         _make_entry("sensor.frigate_cam1_fps", platform="frigate"),
@@ -274,6 +278,7 @@ def test_resolve_combined_selectors():
     ):
         rule = {
             CONF_RULE_NAME: "r",
+            CONF_MATCH_MODE: MATCH_MODE_ANY,
             CONF_INTEGRATION_FILTER: ["frigate"],
             CONF_ENTITY_IDS: ["sensor.esp_temp"],
             CONF_ENTITY_REGEX_EXCLUDE: ["_debug$"],
@@ -286,6 +291,184 @@ def test_resolve_combined_selectors():
     assert "sensor.esp_temp" in result
     assert "sensor.esp_temp_debug" not in result
     assert "sensor.other" not in result
+
+
+# ---------------------------------------------------------------------------
+# match_mode: "all" is the default and computes set intersection over every
+# present positive selector. This is the fix for the "ESPHome diagnostic
+# sensors" family of rules where the author intended intersection.
+# ---------------------------------------------------------------------------
+
+
+def test_default_mode_is_all_integration_and_regex_intersect():
+    """Without an explicit match_mode, integration_filter + regex is intersection."""
+    manager = _make_manager()
+    reg = _make_registry(
+        _make_entry("sensor.esp_voltage", platform="esphome"),
+        _make_entry("sensor.esp_temperature", platform="esphome"),
+        _make_entry("sensor.mqtt_voltage", platform="mqtt"),
+    )
+    rule = {
+        CONF_RULE_NAME: "r",
+        CONF_INTEGRATION_FILTER: ["esphome"],
+        CONF_ENTITY_REGEX_INCLUDE: [r"_voltage$"],
+        CONF_KEEP_DAYS: 7,
+        CONF_ENABLED: True,
+    }
+    result = manager._resolve_entities(rule, reg)
+    # Only the ESPHome entity that also matches _voltage$
+    assert result == ["sensor.esp_voltage"]
+
+
+def test_match_mode_all_explicit_matches_default_behaviour():
+    """Explicit match_mode=all produces the same result as the default."""
+    manager = _make_manager()
+    reg = _make_registry(
+        _make_entry("sensor.esp_voltage", platform="esphome"),
+        _make_entry("sensor.esp_temperature", platform="esphome"),
+        _make_entry("sensor.mqtt_voltage", platform="mqtt"),
+    )
+    rule = {
+        CONF_RULE_NAME: "r",
+        CONF_MATCH_MODE: MATCH_MODE_ALL,
+        CONF_INTEGRATION_FILTER: ["esphome"],
+        CONF_ENTITY_REGEX_INCLUDE: [r"_voltage$"],
+        CONF_KEEP_DAYS: 7,
+        CONF_ENABLED: True,
+    }
+    result = manager._resolve_entities(rule, reg)
+    assert result == ["sensor.esp_voltage"]
+
+
+def test_match_mode_all_three_selectors_all_must_match():
+    """integration + glob + regex — all three must agree."""
+    manager = _make_manager()
+    reg = _make_registry(
+        # Matches all three
+        _make_entry("sensor.esp_workshop_voltage", platform="esphome"),
+        # Matches glob + regex but wrong platform
+        _make_entry("sensor.esp_workshop_voltage_mqtt", platform="mqtt"),
+        # Matches platform + glob but not regex
+        _make_entry("sensor.esp_workshop_temp", platform="esphome"),
+        # Matches platform + regex but not glob
+        _make_entry("sensor.esp_basement_voltage", platform="esphome"),
+    )
+    rule = {
+        CONF_RULE_NAME: "r",
+        CONF_INTEGRATION_FILTER: ["esphome"],
+        CONF_ENTITY_GLOBS: ["sensor.esp_workshop_*"],
+        CONF_ENTITY_REGEX_INCLUDE: [r"_voltage$"],
+        CONF_KEEP_DAYS: 7,
+        CONF_ENABLED: True,
+    }
+    result = manager._resolve_entities(rule, reg)
+    assert result == ["sensor.esp_workshop_voltage"]
+
+
+def test_match_mode_all_single_selector_behaves_like_any():
+    """With one positive selector, all and any collapse to the same set."""
+    manager = _make_manager()
+    reg = _make_registry(
+        _make_entry("sensor.a", platform="esphome"),
+        _make_entry("sensor.b", platform="mqtt"),
+    )
+    rule_all = {
+        CONF_RULE_NAME: "r",
+        CONF_MATCH_MODE: MATCH_MODE_ALL,
+        CONF_INTEGRATION_FILTER: ["esphome"],
+        CONF_KEEP_DAYS: 7,
+        CONF_ENABLED: True,
+    }
+    rule_any = dict(rule_all)
+    rule_any[CONF_MATCH_MODE] = MATCH_MODE_ANY
+
+    assert manager._resolve_entities(rule_all, reg) == manager._resolve_entities(
+        rule_any, reg
+    )
+    assert manager._resolve_entities(rule_all, reg) == ["sensor.a"]
+
+
+def test_match_mode_all_within_selector_values_still_or():
+    """Within one selector, values OR; across selectors, AND."""
+    manager = _make_manager()
+    reg = _make_registry(
+        _make_entry("sensor.esp_voltage", platform="esphome"),
+        _make_entry("sensor.mqtt_voltage", platform="mqtt"),
+        _make_entry("sensor.mqtt_temp", platform="mqtt"),
+        _make_entry("sensor.zha_voltage", platform="zha"),
+    )
+    # Platform is esphome OR mqtt, AND id ends in _voltage.
+    rule = {
+        CONF_RULE_NAME: "r",
+        CONF_INTEGRATION_FILTER: ["esphome", "mqtt"],
+        CONF_ENTITY_REGEX_INCLUDE: [r"_voltage$"],
+        CONF_KEEP_DAYS: 7,
+        CONF_ENABLED: True,
+    }
+    result = manager._resolve_entities(rule, reg)
+    assert result == ["sensor.esp_voltage", "sensor.mqtt_voltage"]
+
+
+def test_match_mode_all_exclude_still_applied_after_intersection():
+    """entity_regex_exclude subtracts from the AND'd candidate set."""
+    manager = _make_manager()
+    reg = _make_registry(
+        _make_entry("sensor.esp_voltage", platform="esphome"),
+        _make_entry("sensor.esp_voltage_debug", platform="esphome"),
+    )
+    rule = {
+        CONF_RULE_NAME: "r",
+        CONF_INTEGRATION_FILTER: ["esphome"],
+        CONF_ENTITY_REGEX_INCLUDE: [r"_voltage"],
+        CONF_ENTITY_REGEX_EXCLUDE: [r"_debug$"],
+        CONF_KEEP_DAYS: 7,
+        CONF_ENABLED: True,
+    }
+    result = manager._resolve_entities(rule, reg)
+    assert result == ["sensor.esp_voltage"]
+
+
+def test_match_mode_all_empty_intersection_yields_empty():
+    """When no entity satisfies every selector, result is empty (not the universe)."""
+    manager = _make_manager()
+    reg = _make_registry(
+        _make_entry("sensor.esp_temp", platform="esphome"),
+        _make_entry("sensor.mqtt_voltage", platform="mqtt"),
+    )
+    rule = {
+        CONF_RULE_NAME: "r",
+        CONF_INTEGRATION_FILTER: ["esphome"],
+        CONF_ENTITY_REGEX_INCLUDE: [r"_voltage$"],
+        CONF_KEEP_DAYS: 7,
+        CONF_ENABLED: True,
+    }
+    assert manager._resolve_entities(rule, reg) == []
+
+
+def test_match_mode_all_device_and_regex_intersect():
+    """device_ids intersected with entity_regex_include under all mode."""
+    manager = _make_manager()
+    reg = _make_registry(
+        _make_entry("sensor.cam1_fps", device_id="dev_abc"),
+        _make_entry("sensor.cam1_status", device_id="dev_abc"),
+        _make_entry("sensor.cam2_fps", device_id="dev_xyz"),
+    )
+    with patch(
+        "custom_components.recorder_tuning.__init__.er.async_entries_for_device",
+        return_value=[
+            reg.entities["sensor.cam1_fps"],
+            reg.entities["sensor.cam1_status"],
+        ],
+    ):
+        rule = {
+            CONF_RULE_NAME: "r",
+            CONF_DEVICE_IDS: ["dev_abc"],
+            CONF_ENTITY_REGEX_INCLUDE: [r"_fps$"],
+            CONF_KEEP_DAYS: 5,
+            CONF_ENABLED: True,
+        }
+        result = manager._resolve_entities(rule, reg)
+    assert result == ["sensor.cam1_fps"]
 
 
 # ---------------------------------------------------------------------------

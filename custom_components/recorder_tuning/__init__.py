@@ -31,13 +31,17 @@ from .const import (
     CONF_ENTITY_REGEX_INCLUDE,
     CONF_INTEGRATION_FILTER,
     CONF_KEEP_DAYS,
+    CONF_MATCH_MODE,
     CONF_PURGE_TIME,
     CONF_RULE_NAME,
     CONF_RULES,
     CONF_STATS_KEEP_DAYS,
+    DEFAULT_MATCH_MODE,
     DEFAULT_PURGE_TIME,
     DEFAULT_STATS_KEEP_DAYS,
     DOMAIN,
+    MATCH_MODE_ALL,
+    MATCH_MODE_ANY,
     YAML_CONFIG_FILE,
 )
 
@@ -91,6 +95,9 @@ _RULE_SCHEMA = vol.Schema(
         vol.Optional(CONF_ENTITY_REGEX_EXCLUDE, default=[]): [_regex_pattern],
         vol.Required(CONF_KEEP_DAYS): vol.All(int, vol.Range(min=1, max=365)),
         vol.Optional(CONF_ENABLED, default=True): bool,
+        vol.Optional(CONF_MATCH_MODE, default=DEFAULT_MATCH_MODE): vol.In(
+            [MATCH_MODE_ALL, MATCH_MODE_ANY]
+        ),
     }
 )
 
@@ -661,53 +668,95 @@ class RecorderTuningManager:
     ) -> list[str]:
         """Build a deduplicated list of entity_ids matching the rule.
 
+        Each *present* positive selector produces an entity-id set. Sets are
+        combined by ``match_mode``:
+
+        - ``"all"`` (default): intersection — the entity must satisfy every
+          present selector. Adding a selector narrows the rule.
+        - ``"any"``: union — legacy behaviour; the entity matches if any
+          selector matches.
+
+        Within a single selector, list items still OR together
+        (e.g. ``integration_filter: [a, b]`` means platform is ``a`` or ``b``;
+        ``entity_regex_include: [p1, p2]`` means either pattern matches).
+
+        ``entity_regex_exclude`` is always subtracted from the final set,
+        independent of mode.
+
         Disabled entities are included in every selector path. A disabled
         entity does not record new states, but it may still have recorded
         history from before it was disabled — and that history is exactly
         what purge rules need to reach.
         """
+        match_mode = rule.get(CONF_MATCH_MODE, DEFAULT_MATCH_MODE)
         all_entries: list[er.RegistryEntry] = list(ent_reg.entities.values())
 
-        # --- Positive selectors: build candidate set ---
-        candidates: set[str] = set()
+        # Glob and regex selectors both walk the full entity-id list. Build it
+        # lazily so rules that don't use those selectors skip the allocation.
+        _all_entity_ids_cache: list[str] | None = None
+
+        def all_entity_ids() -> list[str]:
+            nonlocal _all_entity_ids_cache
+            if _all_entity_ids_cache is None:
+                _all_entity_ids_cache = [e.entity_id for e in all_entries]
+            return _all_entity_ids_cache
+
+        # --- Positive selectors: one set per *present* selector ---
+        selector_sets: list[set[str]] = []
 
         # Explicit entity IDs
-        for eid in rule.get(CONF_ENTITY_IDS, []):
-            candidates.add(eid)
+        entity_ids = rule.get(CONF_ENTITY_IDS) or []
+        if entity_ids:
+            selector_sets.append(set(entity_ids))
 
         # Integration/platform filter
-        for integration in rule.get(CONF_INTEGRATION_FILTER, []):
-            for entry in all_entries:
-                if entry.platform == integration:
-                    candidates.add(entry.entity_id)
+        integrations = rule.get(CONF_INTEGRATION_FILTER) or []
+        if integrations:
+            wanted = set(integrations)
+            selector_sets.append(
+                {e.entity_id for e in all_entries if e.platform in wanted}
+            )
 
         # Device IDs → all entities under that device, including disabled
         # ones (they may have pre-disable recorder history to purge).
-        for device_id in rule.get(CONF_DEVICE_IDS, []):
-            for entry in er.async_entries_for_device(
-                ent_reg, device_id, include_disabled_entities=True
-            ):
-                candidates.add(entry.entity_id)
+        device_ids = rule.get(CONF_DEVICE_IDS) or []
+        if device_ids:
+            device_set: set[str] = set()
+            for device_id in device_ids:
+                for entry in er.async_entries_for_device(
+                    ent_reg, device_id, include_disabled_entities=True
+                ):
+                    device_set.add(entry.entity_id)
+            selector_sets.append(device_set)
 
-        # Glob patterns and regex selectors both need the full entity ID list;
-        # build it lazily so rules using only entity_ids/integration/device skip it.
-        _all_entity_ids: list[str] | None = None
+        # Glob patterns
+        globs = rule.get(CONF_ENTITY_GLOBS) or []
+        if globs:
+            glob_set: set[str] = set()
+            for pattern in globs:
+                glob_set.update(fnmatch.filter(all_entity_ids(), pattern))
+            selector_sets.append(glob_set)
 
-        def all_entity_ids() -> list[str]:
-            nonlocal _all_entity_ids
-            if _all_entity_ids is None:
-                _all_entity_ids = [e.entity_id for e in all_entries]
-            return _all_entity_ids
-
-        for pattern in rule.get(CONF_ENTITY_GLOBS, []):
-            candidates.update(fnmatch.filter(all_entity_ids(), pattern))
-
-        # Regex patterns have been validated by _RULE_SCHEMA → _regex_pattern at
+        # Regex include — patterns validated by _RULE_SCHEMA → _regex_pattern at
         # load time; re.compile here cannot raise. re's internal cache makes
         # repeated compilation essentially free.
-        for pattern in rule.get(CONF_ENTITY_REGEX_INCLUDE, []):
-            compiled = re.compile(pattern)
-            candidates.update(eid for eid in all_entity_ids() if compiled.search(eid))
+        regex_includes = rule.get(CONF_ENTITY_REGEX_INCLUDE) or []
+        if regex_includes:
+            regex_set: set[str] = set()
+            for pattern in regex_includes:
+                compiled = re.compile(pattern)
+                regex_set.update(
+                    eid for eid in all_entity_ids() if compiled.search(eid)
+                )
+            selector_sets.append(regex_set)
+
+        if not selector_sets:
+            return []
+
+        if match_mode == MATCH_MODE_ALL:
+            candidates: set[str] = set.intersection(*selector_sets)
+        else:
+            candidates = set.union(*selector_sets)
 
         # --- Negative selector: regex exclude applied to candidate set ---
         excluded: set[str] = set()

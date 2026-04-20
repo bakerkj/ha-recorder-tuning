@@ -22,6 +22,14 @@ CONF_ENTITY_GLOBS = "entity_globs"
 CONF_ENTITY_REGEX_INCLUDE = "entity_regex_include"  # entity must match at least one
 CONF_ENTITY_REGEX_EXCLUDE = "entity_regex_exclude"  # entity excluded if matches any
 
+# How the positive selectors within a rule combine. "all" (default) means an
+# entity must satisfy every present selector — the natural mental model of
+# "each selector narrows the rule". "any" is the legacy union mode.
+CONF_MATCH_MODE = "match_mode"
+MATCH_MODE_ALL = "all"
+MATCH_MODE_ANY = "any"
+DEFAULT_MATCH_MODE = MATCH_MODE_ALL
+
 # Defaults
 DEFAULT_PURGE_TIME = "03:00"
 DEFAULT_STATS_KEEP_DAYS = 30

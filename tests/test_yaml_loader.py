@@ -117,6 +117,7 @@ rules:
             "entity_regex_include": [],
             "entity_regex_exclude": [],
             "enabled": True,
+            "match_mode": "all",
         }
     ]
 
@@ -242,6 +243,65 @@ def test_empty_rules_list_returns_empty_list(tmp_path):
 
     _write_yaml(tmp_path, "rules: []\n")
     assert _load_yaml_rules(_hass_with_config_dir(tmp_path)) == []
+
+
+def test_match_mode_defaults_to_all(tmp_path):
+    """Rules without an explicit match_mode default to intersection semantics."""
+    from custom_components.recorder_tuning import _load_yaml_rules
+    from custom_components.recorder_tuning.const import CONF_MATCH_MODE, MATCH_MODE_ALL
+
+    _write_yaml(
+        tmp_path,
+        """\
+rules:
+  - name: no mode
+    entity_ids: [sensor.a]
+    keep_days: 7
+""",
+    )
+    rules = _load_yaml_rules(_hass_with_config_dir(tmp_path))
+    assert rules[0][CONF_MATCH_MODE] == MATCH_MODE_ALL
+
+
+@pytest.mark.parametrize("mode", ["all", "any"])
+def test_match_mode_accepts_valid_values(tmp_path, mode):
+    from custom_components.recorder_tuning import _load_yaml_rules
+    from custom_components.recorder_tuning.const import CONF_MATCH_MODE
+
+    _write_yaml(
+        tmp_path,
+        f"""\
+rules:
+  - name: mode test
+    match_mode: {mode}
+    entity_ids: [sensor.a]
+    keep_days: 7
+""",
+    )
+    rules = _load_yaml_rules(_hass_with_config_dir(tmp_path))
+    assert rules[0][CONF_MATCH_MODE] == mode
+
+
+def test_match_mode_rejects_bad_value_skips_rule(tmp_path, caplog):
+    """A rule with an unknown match_mode value is skipped with a warning."""
+    from custom_components.recorder_tuning import _load_yaml_rules
+
+    _write_yaml(
+        tmp_path,
+        """\
+rules:
+  - name: bad mode
+    match_mode: intersection
+    entity_ids: [sensor.a]
+    keep_days: 7
+  - name: ok
+    keep_days: 5
+    entity_ids: [sensor.b]
+""",
+    )
+    rules = _load_yaml_rules(_hass_with_config_dir(tmp_path))
+    assert [r["name"] for r in rules] == ["ok"]
+    assert "validation error" in caplog.text
 
 
 def test_duplicate_rule_names_warned_but_all_returned(tmp_path, caplog):

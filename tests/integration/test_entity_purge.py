@@ -34,6 +34,7 @@ from custom_components.recorder_tuning.const import (
     CONF_KEEP_DAYS,
     CONF_RULE_NAME,
     DOMAIN,
+    MATCH_MODE_ANY,
 )
 
 from .conftest import (
@@ -327,7 +328,7 @@ async def test_disabled_rule_skips_purge(
 async def test_combined_glob_and_entity_id_union(
     integration_entry: tuple[HomeAssistant, Any], freezer: Any
 ) -> None:
-    """Glob and explicit entity_id together select the union of both sets."""
+    """With match_mode=any, glob and explicit entity_id select the union of both sets."""
     hass, _ = integration_entry
 
     await set_state_at(hass, "sensor.target_power", "100", OLD_TIME, freezer)
@@ -336,13 +337,52 @@ async def test_combined_glob_and_entity_id_union(
 
     await configure_rules(
         hass,
-        [_rule(entity_globs=["sensor.target_*"], entity_ids=["sensor.extra_entity"])],
+        [
+            _rule(
+                match_mode=MATCH_MODE_ANY,
+                entity_globs=["sensor.target_*"],
+                entity_ids=["sensor.extra_entity"],
+            )
+        ],
     )
     await run_purge(hass)
 
     assert count_states(hass, "sensor.target_power") == 0
     assert count_states(hass, "sensor.extra_entity") == 0
     assert count_states(hass, "sensor.bystander") > 0
+
+
+async def test_default_match_mode_is_intersection(
+    integration_entry: tuple[HomeAssistant, Any], freezer: Any
+) -> None:
+    """Without match_mode specified, integration_filter AND regex must both match."""
+    hass, _ = integration_entry
+
+    await set_state_at(
+        hass, "sensor.esp_voltage", "3.3", OLD_TIME, freezer, platform="esphome"
+    )
+    await set_state_at(
+        hass, "sensor.esp_temperature", "22", OLD_TIME, freezer, platform="esphome"
+    )
+    await set_state_at(
+        hass, "sensor.mqtt_voltage", "5", OLD_TIME, freezer, platform="mqtt"
+    )
+
+    await configure_rules(
+        hass,
+        [
+            _rule(
+                integration_filter=["esphome"],
+                entity_regex_include=[r"_voltage$"],
+            )
+        ],
+    )
+    await run_purge(hass)
+
+    # Only the entity that is BOTH esphome AND matches _voltage$ is purged.
+    assert count_states(hass, "sensor.esp_voltage") == 0
+    assert count_states(hass, "sensor.esp_temperature") > 0
+    assert count_states(hass, "sensor.mqtt_voltage") > 0
 
 
 async def test_multiple_rules_run_independently(
