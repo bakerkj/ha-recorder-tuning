@@ -601,7 +601,8 @@ class RecorderTuningManager:
                     eid,
                 )
 
-        return list(resolved)
+        # Sort for deterministic batch order, log order, and dry-run diffs.
+        return sorted(resolved)
 
     async def async_service_reload(self, call: ServiceCall) -> None:
         """Service handler: reload rules from YAML file (or fall back to stored rules)."""

@@ -405,6 +405,26 @@ def test_resolve_device_id_includes_disabled():
     assert "sensor.cam1_broken" in result
 
 
+def test_resolve_output_is_sorted():
+    """Resolved entity_ids must be returned in sorted order (deterministic)."""
+    manager = _make_manager()
+    # Register entries in non-alphabetical order.
+    reg = _make_registry(
+        _make_entry("sensor.zeta"),
+        _make_entry("sensor.alpha"),
+        _make_entry("sensor.mu"),
+        _make_entry("sensor.beta"),
+    )
+    rule = {
+        CONF_RULE_NAME: "r",
+        CONF_ENTITY_GLOBS: ["sensor.*"],
+        CONF_KEEP_DAYS: 7,
+        CONF_ENABLED: True,
+    }
+    result = manager._resolve_entities(rule, reg)
+    assert result == ["sensor.alpha", "sensor.beta", "sensor.mu", "sensor.zeta"]
+
+
 def test_resolve_explicit_entity_id_honoured_when_disabled():
     """Explicit entity_ids work regardless of registry disabled state."""
     manager = _make_manager()
