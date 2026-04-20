@@ -35,6 +35,7 @@ from custom_components.recorder_tuning.const import (
     CONF_DRY_RUN,
     CONF_PURGE_TIME,
     CONF_RULES,
+    CONF_RUN_RECORDER_PURGE,
     CONF_STATS_KEEP_DAYS,
     DOMAIN,
 )
@@ -122,6 +123,10 @@ async def integration_entry(
             CONF_PURGE_TIME: "03:00",
             CONF_STATS_KEEP_DAYS: STATS_KEEP_DAYS,
             CONF_DRY_RUN: False,  # tests that call run_purge_now expect live purges
+            # Most tests isolate per-entity-rule behavior from the trailing
+            # global recorder.purge; the tests that need to observe that
+            # trailing call flip it back on explicitly.
+            CONF_RUN_RECORDER_PURGE: False,
             CONF_RULES: [],
         }
     }
