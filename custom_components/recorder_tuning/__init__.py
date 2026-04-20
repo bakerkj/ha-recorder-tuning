@@ -35,7 +35,6 @@ from .const import (
     CONF_RULE_NAME,
     CONF_RULES,
     CONF_STATS_KEEP_DAYS,
-    DEFAULT_KEEP_DAYS,
     DEFAULT_PURGE_TIME,
     DEFAULT_STATS_KEEP_DAYS,
     DOMAIN,
@@ -76,6 +75,16 @@ _RULE_SCHEMA = vol.Schema(
         vol.Optional(CONF_ENABLED, default=True): bool,
     }
 )
+
+
+def _parse_hhmm(value: str) -> time:
+    """Parse a ``HH:MM`` string into a ``time`` object.
+
+    Raises ``ValueError`` (or ``TypeError`` if ``value`` isn't a string) on
+    malformed input — callers decide whether to treat that as a validation
+    failure (config flow) or a warning plus default (scheduler).
+    """
+    return datetime.strptime(value, "%H:%M").time()
 
 
 def _load_yaml_rules(hass: HomeAssistant) -> list[dict]:
@@ -134,7 +143,8 @@ def _load_yaml_rules(hass: HomeAssistant) -> list[dict]:
                 err,
             )
 
-    _LOGGER.info("recorder_tuning: loaded %d rule(s) from %s", len(rules), yaml_path)
+    # Callers (async_setup_entry, async_service_reload) emit their own summary
+    # log with schedule/context — don't double-log the rule count here.
     return rules
 
 
@@ -222,6 +232,48 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.services.async_remove(DOMAIN, service)
 
     return True
+
+
+async def _query_row_counts(
+    hass: HomeAssistant, entity_ids: list[str], cutoff_ts: float
+) -> dict[str, tuple[int, float]]:
+    """Return ``{entity_id: (row_count, oldest_ts)}`` for rows older than cutoff.
+
+    Runs the grouped count query on the recorder's executor thread in batches
+    of ``_PURGE_BATCH_SIZE`` to stay under SQLite's bind-var limit. Entities
+    with zero matching rows are omitted from the result.
+    """
+    # Deferred: homeassistant.components.recorder is not available at module
+    # load time — the recorder component must be fully initialised first.
+    from homeassistant.components.recorder import get_instance  # noqa: PLC0415
+    from homeassistant.components.recorder.db_schema import States, StatesMeta  # noqa: PLC0415
+    from homeassistant.helpers.recorder import session_scope  # noqa: PLC0415
+    from sqlalchemy import func, select  # noqa: PLC0415
+
+    instance = get_instance(hass)
+
+    def _query() -> dict[str, tuple[int, float]]:
+        results: dict[str, tuple[int, float]] = {}
+        with session_scope(session=instance.get_session()) as session:
+            for i in range(0, len(entity_ids), _PURGE_BATCH_SIZE):
+                batch = entity_ids[i : i + _PURGE_BATCH_SIZE]
+                rows = session.execute(
+                    select(
+                        StatesMeta.entity_id,
+                        func.count(States.state_id).label("cnt"),
+                        func.min(States.last_updated_ts).label("oldest_ts"),
+                    )
+                    .join(StatesMeta, States.metadata_id == StatesMeta.metadata_id)
+                    .where(StatesMeta.entity_id.in_(batch))
+                    .where(States.last_updated_ts < cutoff_ts)
+                    .group_by(StatesMeta.entity_id)
+                ).fetchall()
+                for row in rows:
+                    if row.cnt > 0:
+                        results[row.entity_id] = (row.cnt, row.oldest_ts)
+        return results
+
+    return await hass.async_add_executor_job(_query)
 
 
 def _apply_stats_patch(hass: HomeAssistant, stats_keep_days: int) -> None:
@@ -326,14 +378,14 @@ class RecorderTuningManager:
 
         purge_time_str = self.entry.data.get(CONF_PURGE_TIME, DEFAULT_PURGE_TIME)
         try:
-            h, m = purge_time_str.split(":")
-            purge_time = time(int(h), int(m), 0)
-        except (ValueError, AttributeError):
+            purge_time = _parse_hhmm(purge_time_str)
+        except (TypeError, ValueError):
             _LOGGER.warning(
-                "recorder_tuning: invalid purge_time '%s', defaulting to 03:00",
+                "recorder_tuning: invalid purge_time '%s', defaulting to %s",
                 purge_time_str,
+                DEFAULT_PURGE_TIME,
             )
-            purge_time = time(3, 0, 0)
+            purge_time = _parse_hhmm(DEFAULT_PURGE_TIME)
 
         self._unsub_timer = async_track_time_change(
             self.hass,
@@ -398,7 +450,7 @@ class RecorderTuningManager:
                 )
                 continue
 
-            keep_days = rule.get(CONF_KEEP_DAYS, DEFAULT_KEEP_DAYS)
+            keep_days = rule[CONF_KEEP_DAYS]  # required by _RULE_SCHEMA
 
             # Always log what will be (or would be) purged before acting
             await self._log_purge_plan(
@@ -436,42 +488,17 @@ class RecorderTuningManager:
         are visible by default.  In live mode they are logged at DEBUG to avoid
         flooding the log on large instances — the INFO summary line (total rows
         across all matched entities) is always emitted in both modes.
+
+        Note on accuracy: the query and the subsequent ``purge_entities`` call
+        are not in a single transaction, so new rows can land between them.
+        Counts below are a snapshot at query time; the actual delete count
+        may differ slightly on a busy instance.
         """
         prefix = "[DRY RUN]" if dry_run else "[PURGE]"
-        # Deferred: homeassistant.components.recorder is not available at module
-        # load time — the recorder component must be fully initialised first.
-        from homeassistant.components.recorder import get_instance  # noqa: PLC0415
-        from homeassistant.components.recorder.db_schema import States, StatesMeta  # noqa: PLC0415
-        from homeassistant.helpers.recorder import session_scope  # noqa: PLC0415
-        from sqlalchemy import func, select  # noqa: PLC0415
-
         cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
-        cutoff_ts = cutoff.timestamp()
-        instance = get_instance(self.hass)
-
-        def _query() -> dict[str, tuple[int, float]]:
-            results: dict[str, tuple[int, float]] = {}
-            with session_scope(session=instance.get_session()) as session:
-                for i in range(0, len(entity_ids), _PURGE_BATCH_SIZE):
-                    batch = entity_ids[i : i + _PURGE_BATCH_SIZE]
-                    rows = session.execute(
-                        select(
-                            StatesMeta.entity_id,
-                            func.count(States.state_id).label("cnt"),
-                            func.min(States.last_updated_ts).label("oldest_ts"),
-                        )
-                        .join(StatesMeta, States.metadata_id == StatesMeta.metadata_id)
-                        .where(StatesMeta.entity_id.in_(batch))
-                        .where(States.last_updated_ts < cutoff_ts)
-                        .group_by(StatesMeta.entity_id)
-                    ).fetchall()
-                    for row in rows:
-                        if row.cnt > 0:
-                            results[row.entity_id] = (row.cnt, row.oldest_ts)
-            return results
 
         try:
-            results = await self.hass.async_add_executor_job(_query)
+            results = await _query_row_counts(self.hass, entity_ids, cutoff.timestamp())
         except Exception as err:  # noqa: BLE001
             # Broad catch is intentional: SQLAlchemy / recorder can raise a
             # wide range of errors (OperationalError, InterfaceError, driver
@@ -649,7 +676,14 @@ class RecorderTuningManager:
         )
 
     async def async_reload(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
-        """Handle config entry updates (schedule change, stats_keep_days change)."""
+        """Handle config entry updates (schedule change, stats_keep_days change).
+
+        ``hass`` and ``entry`` are required by HA's update-listener contract
+        (``entry.add_update_listener``). HA mutates ``entry`` in place, so
+        it *is* ``self.entry`` — reading either gives the same values — but
+        we keep the args rather than referencing ``self`` to match the
+        listener signature HA documents.
+        """
         self._schedule_purge()
         _apply_stats_patch(
             hass, entry.data.get(CONF_STATS_KEEP_DAYS, DEFAULT_STATS_KEEP_DAYS)

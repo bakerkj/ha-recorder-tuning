@@ -24,7 +24,6 @@ CONF_ENTITY_REGEX_EXCLUDE = "entity_regex_exclude"  # entity excluded if matches
 
 # Defaults
 DEFAULT_PURGE_TIME = "03:00"
-DEFAULT_KEEP_DAYS = 7
 DEFAULT_STATS_KEEP_DAYS = 30
 DEFAULT_DRY_RUN = True
 
