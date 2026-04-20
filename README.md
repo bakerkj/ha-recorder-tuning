@@ -197,6 +197,7 @@ rules, and the global sweep is slow enough to be surprising by hand. Pass
 | ------------------- | ----------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `dry_run`           | bool        | _(inherits config)_ | Override dry-run mode for this call only. Omit to use the configured setting.                                                                                                                                      |
 | `rule_names`        | list of str | _(all rules)_       | Restrict the run to rules whose `name:` matches (case-insensitive). Unknown names log a warning but don't abort. When provided, the trailing `recorder.purge` is always skipped regardless of `ha_recorder_purge`. |
+| `keep_days`         | int, 1-365  | _(rule's value)_    | One-off override of `keep_days` for every rule that runs in this call. Does not persist. Useful for `rule_names`-targeted "what if I made this more aggressive" experiments.                                       |
 | `ha_recorder_purge` | bool        | `false`             | Opt into the trailing HA `recorder.purge` call after the rules run — matches the nightly flow. Ignored when `rule_names` is provided.                                                                              |
 
 ```yaml
@@ -206,6 +207,17 @@ data:
   dry_run: true
   rule_names:
     - "Frigate camera metrics"
+```
+
+```yaml
+# "What if I made this rule more aggressive?" — dry-run one rule with a
+# shorter retention to preview the extra rows that would be purged
+service: recorder_tuning.run_purge_now
+data:
+  dry_run: true
+  rule_names:
+    - "Frigate camera metrics"
+  keep_days: 3
 ```
 
 ```yaml

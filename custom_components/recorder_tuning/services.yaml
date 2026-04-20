@@ -29,6 +29,20 @@ run_purge_now:
       selector:
         text:
           multiple: true
+    keep_days:
+      name: Keep Days Override
+      description: >-
+        Optional one-off override for `keep_days` on every rule that runs in
+        this call (typically combined with `rule_names` to scope the override to
+        a single rule). Range 1-365. Does not persist — the next scheduled run
+        uses the YAML-configured value again.
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 365
+          step: 1
+          mode: box
     ha_recorder_purge:
       name: Include HA Recorder Purge
       description: >-
