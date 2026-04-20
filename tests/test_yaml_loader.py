@@ -199,3 +199,28 @@ def test_empty_rules_list_returns_empty_list(tmp_path):
 
     _write_yaml(tmp_path, "rules: []\n")
     assert _load_yaml_rules(_hass_with_config_dir(tmp_path)) == []
+
+
+def test_duplicate_rule_names_warned_but_all_returned(tmp_path, caplog):
+    """Duplicates still load (rule engine supports them), but a warning is emitted."""
+    from custom_components.recorder_tuning import _load_yaml_rules
+
+    _write_yaml(
+        tmp_path,
+        """\
+rules:
+  - name: shared_name
+    keep_days: 7
+    entity_ids: [sensor.a]
+  - name: unique
+    keep_days: 3
+    entity_ids: [sensor.b]
+  - name: shared_name
+    keep_days: 5
+    entity_ids: [sensor.c]
+""",
+    )
+
+    rules = _load_yaml_rules(_hass_with_config_dir(tmp_path))
+    assert [r["name"] for r in rules] == ["shared_name", "unique", "shared_name"]
+    assert "rule name 'shared_name' appears more than once" in caplog.text

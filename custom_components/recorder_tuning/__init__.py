@@ -143,6 +143,25 @@ def _load_yaml_rules(hass: HomeAssistant) -> list[dict]:
                 err,
             )
 
+    # Warn on duplicate rule names. Duplicates still run — the rule engine
+    # supports multiple rules matching the same entity — but identical names
+    # make log output ambiguous (which rule ran first? which failed?).
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for rule in rules:
+        name = rule[CONF_RULE_NAME]
+        if name in seen:
+            duplicates.add(name)
+        else:
+            seen.add(name)
+    for name in sorted(duplicates):
+        _LOGGER.warning(
+            "recorder_tuning: rule name '%s' appears more than once in %s — "
+            "each instance runs, but logs will be ambiguous",
+            name,
+            yaml_path,
+        )
+
     # Callers (async_setup_entry, async_service_reload) emit their own summary
     # log with schedule/context — don't double-log the rule count here.
     return rules
@@ -512,6 +531,16 @@ class RecorderTuningManager:
             )
             return
 
+        if not results:
+            _LOGGER.info(
+                "recorder_tuning: %s rule '%s' — nothing to purge (checked %d entities, cutoff %s)",
+                prefix,
+                rule_name,
+                len(entity_ids),
+                cutoff.strftime("%Y-%m-%d %H:%M UTC"),
+            )
+            return
+
         total_rows = sum(cnt for cnt, _ in results.values())
         _LOGGER.info(
             "recorder_tuning: %s rule '%s' — %d of %d matched entities have "
@@ -563,10 +592,6 @@ class RecorderTuningManager:
                     oldest.strftime("%Y-%m-%d %H:%M UTC"),
                     cutoff.strftime("%Y-%m-%d %H:%M UTC"),
                 )
-        if not results:
-            _LOGGER.info(
-                "recorder_tuning: %s rule '%s' — nothing to purge", prefix, rule_name
-            )
 
     def _resolve_entities(
         self,
