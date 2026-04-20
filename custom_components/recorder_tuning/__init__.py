@@ -601,9 +601,10 @@ class RecorderTuningManager:
 
         if not results:
             _LOGGER.info(
-                "recorder_tuning: %s rule '%s' — nothing to purge (checked %d entities, cutoff %s)",
+                "recorder_tuning: %s rule '%s' (keep %dd) — nothing to purge (checked %d entities, cutoff %s)",
                 prefix,
                 rule_name,
+                keep_days,
                 len(entity_ids),
                 cutoff.strftime("%Y-%m-%d %H:%M UTC"),
             )
@@ -611,10 +612,11 @@ class RecorderTuningManager:
 
         total_rows = sum(cnt for cnt, _ in results.values())
         _LOGGER.info(
-            "recorder_tuning: %s rule '%s' — %d of %d matched entities have "
+            "recorder_tuning: %s rule '%s' (keep %dd) — %d of %d matched entities have "
             "data older than %s (%d rows total)",
             prefix,
             rule_name,
+            keep_days,
             len(results),
             len(entity_ids),
             cutoff.strftime("%Y-%m-%d %H:%M UTC"),
