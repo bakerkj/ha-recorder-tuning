@@ -98,6 +98,12 @@ _RULE_SCHEMA = vol.Schema(
         vol.Optional(CONF_MATCH_MODE, default=DEFAULT_MATCH_MODE): vol.In(
             [MATCH_MODE_ALL, MATCH_MODE_ANY]
         ),
+        # Per-rule dry-run override. Absent (None) means the rule inherits the
+        # run-level setting (config-entry default, possibly overridden by the
+        # service call). Explicit true/false forces the rule's mode regardless
+        # of the run-level value — useful for leaving a newly-added rule in
+        # dry-run while the rest of the rule set runs live.
+        vol.Optional(CONF_DRY_RUN, default=None): vol.Any(None, bool),
     }
 )
 
@@ -494,15 +500,22 @@ class RecorderTuningManager:
         await self._execute_all_rules(dry_run=dry_run)
 
     async def _execute_all_rules(self, dry_run: bool = False) -> None:
-        """Resolve entities for each rule and call recorder.purge_entities."""
+        """Resolve entities for each rule and call recorder.purge_entities.
+
+        ``dry_run`` is the run-level default; any rule with an explicit
+        ``dry_run`` field in YAML overrides it for that rule only.
+        """
         ent_reg = er.async_get(self.hass)
 
         if dry_run:
             _LOGGER.info(
-                "recorder_tuning: [DRY RUN] starting — no data will be deleted"
+                "recorder_tuning: [DRY RUN] starting — no data will be deleted "
+                "(rules may override per-rule)"
             )
         else:
-            _LOGGER.info("recorder_tuning: [PURGE] starting")
+            _LOGGER.info(
+                "recorder_tuning: [PURGE] starting (rules may override per-rule)"
+            )
 
         for rule in self.rules:
             if not rule.get(CONF_ENABLED, True):
@@ -538,13 +551,17 @@ class RecorderTuningManager:
             self._warned_empty_rules.discard(rule_name)
 
             keep_days = rule[CONF_KEEP_DAYS]  # required by _RULE_SCHEMA
+            # Per-rule override: schema stores None when absent so we can tell
+            # "not set" from "explicitly false".
+            rule_override = rule.get(CONF_DRY_RUN)
+            rule_dry_run = dry_run if rule_override is None else rule_override
 
             # Always log what will be (or would be) purged before acting
             await self._log_purge_plan(
-                rule_name, entity_ids, keep_days, dry_run=dry_run
+                rule_name, entity_ids, keep_days, dry_run=rule_dry_run
             )
 
-            if not dry_run:
+            if not rule_dry_run:
                 for i in range(0, len(entity_ids), _PURGE_BATCH_SIZE):
                     batch = entity_ids[i : i + _PURGE_BATCH_SIZE]
                     await self.hass.services.async_call(

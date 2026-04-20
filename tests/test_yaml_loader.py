@@ -118,6 +118,7 @@ rules:
             "entity_regex_exclude": [],
             "enabled": True,
             "match_mode": "all",
+            "dry_run": None,
         }
     ]
 
@@ -292,6 +293,65 @@ def test_match_mode_rejects_bad_value_skips_rule(tmp_path, caplog):
 rules:
   - name: bad mode
     match_mode: intersection
+    entity_ids: [sensor.a]
+    keep_days: 7
+  - name: ok
+    keep_days: 5
+    entity_ids: [sensor.b]
+""",
+    )
+    rules = _load_yaml_rules(_hass_with_config_dir(tmp_path))
+    assert [r["name"] for r in rules] == ["ok"]
+    assert "validation error" in caplog.text
+
+
+def test_rule_dry_run_defaults_to_none(tmp_path):
+    """Absent per-rule dry_run means "inherit run-level"; schema stores None."""
+    from custom_components.recorder_tuning import _load_yaml_rules
+    from custom_components.recorder_tuning.const import CONF_DRY_RUN
+
+    _write_yaml(
+        tmp_path,
+        """\
+rules:
+  - name: no override
+    entity_ids: [sensor.a]
+    keep_days: 7
+""",
+    )
+    rules = _load_yaml_rules(_hass_with_config_dir(tmp_path))
+    assert rules[0][CONF_DRY_RUN] is None
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_rule_dry_run_accepts_bool(tmp_path, value):
+    from custom_components.recorder_tuning import _load_yaml_rules
+    from custom_components.recorder_tuning.const import CONF_DRY_RUN
+
+    _write_yaml(
+        tmp_path,
+        f"""\
+rules:
+  - name: override
+    dry_run: {str(value).lower()}
+    entity_ids: [sensor.a]
+    keep_days: 7
+""",
+    )
+    rules = _load_yaml_rules(_hass_with_config_dir(tmp_path))
+    assert rules[0][CONF_DRY_RUN] is value
+
+
+def test_rule_dry_run_rejects_non_bool_skips_rule(tmp_path, caplog):
+    """A non-bool per-rule dry_run is a validation error; the rule is skipped."""
+    from custom_components.recorder_tuning import _load_yaml_rules
+
+    _write_yaml(
+        tmp_path,
+        """\
+rules:
+  - name: bad override
+    dry_run: "yes"
     entity_ids: [sensor.a]
     keep_days: 7
   - name: ok
