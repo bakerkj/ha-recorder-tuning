@@ -25,7 +25,7 @@ from homeassistant.components.recorder.db_schema import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.recorder import session_scope
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.components.recorder.common import (
     async_wait_purge_done,
     async_wait_recording_done,
@@ -34,9 +34,9 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
 from custom_components.recorder_tuning.const import (
     CONF_DRY_RUN,
     CONF_PURGE_TIME,
+    CONF_RULES,
     CONF_STATS_KEEP_DAYS,
     DOMAIN,
-    YAML_CONFIG_FILE,
 )
 
 # ---------------------------------------------------------------------------
@@ -109,21 +109,25 @@ async def recorder_hass(
 @pytest.fixture
 async def integration_entry(
     recorder_hass: HomeAssistant,
-) -> AsyncGenerator[tuple[HomeAssistant, MockConfigEntry], None]:
-    """Load the recorder_tuning integration on top of recorder_hass."""
+) -> AsyncGenerator[tuple[HomeAssistant, None], None]:
+    """Load the recorder_tuning integration on top of recorder_hass.
+
+    Second tuple element is kept for backward compatibility with tests that
+    unpack ``(hass, _)`` — it's now ``None`` since YAML setup doesn't produce
+    a config entry.
+    """
     hass = recorder_hass
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={
+    config = {
+        DOMAIN: {
             CONF_PURGE_TIME: "03:00",
             CONF_STATS_KEEP_DAYS: STATS_KEEP_DAYS,
             CONF_DRY_RUN: False,  # tests that call run_purge_now expect live purges
-        },
-    )
-    entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(entry.entry_id)
+            CONF_RULES: [],
+        }
+    }
+    assert await async_setup_component(hass, DOMAIN, config)
     await hass.async_block_till_done()
-    yield hass, entry
+    yield hass, None
 
 
 # ---------------------------------------------------------------------------
@@ -146,58 +150,49 @@ async def wait_for_purge(hass: HomeAssistant) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _get_manager(hass: HomeAssistant):
+    """Return the live RecorderTuningManager, or raise if not loaded."""
+    manager = hass.data.get(DOMAIN, {}).get("manager")
+    if manager is None:
+        raise RuntimeError("recorder_tuning manager not found — integration not loaded")
+    return manager
+
+
 async def configure_rules(hass: HomeAssistant, rules: list[dict]) -> None:
-    """Write ``rules`` to recorder_tuning.yaml and trigger a reload.
+    """Swap in ``rules`` on the live manager.
 
-    Rules are now sourced exclusively from the YAML file. Tests that want to
-    install a rule set write it to the HA config dir and call the reload
-    service so the live manager picks it up without restarting HA.
+    Full CONFIG_SCHEMA validation still applies — we push the new rules
+    through ``RecorderTuningManager.update_config``, which is the same entry
+    point the reload service uses.
     """
-    import os  # noqa: PLC0415
+    from custom_components.recorder_tuning import CONFIG_SCHEMA  # noqa: PLC0415
 
-    import yaml  # noqa: PLC0415
-
-    path = hass.config.path(YAML_CONFIG_FILE)
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
-        yaml.safe_dump({"rules": rules}, fh, sort_keys=False)
-
-    if hass.services.has_service(DOMAIN, "reload"):
-        await hass.services.async_call(DOMAIN, "reload", {}, blocking=True)
-    else:
-        # Integration hasn't registered its services yet — e.g. during setup
-        # before the entry is live. Fall back to direct assignment so tests
-        # that seed rules at setup still work.
-        for obj in hass.data.get(DOMAIN, {}).values():
-            if hasattr(obj, "rules"):
-                obj.rules = list(rules)
+    manager = _get_manager(hass)
+    new_domain = {
+        **manager.config,
+        CONF_RULES: rules,
+    }
+    validated = CONFIG_SCHEMA({DOMAIN: new_domain})[DOMAIN]
+    manager.update_config(validated)
 
 
 def set_dry_run(hass: HomeAssistant, enabled: bool) -> None:
-    """Update dry_run on the live config entry."""
-    entries = hass.config_entries.async_entries(DOMAIN)
-    if not entries:
-        raise RuntimeError("recorder_tuning config entry not found")
-    entry = entries[0]
-    hass.config_entries.async_update_entry(
-        entry, data={**entry.data, CONF_DRY_RUN: enabled}
-    )
+    """Update the top-level dry_run on the live manager."""
+    manager = _get_manager(hass)
+    manager.config = {**manager.config, CONF_DRY_RUN: enabled}
 
 
 def set_stats_keep_days(hass: HomeAssistant, days: int) -> None:
-    """Update stats_keep_days on the live config entry.
+    """Update stats_keep_days by re-applying the patch.
 
-    ``async_update_entry`` fires the config-entry update listener, which
-    calls ``manager.async_reload`` → ``_apply_stats_patch``. That refreshes
-    the cached retention value the patch closure reads at purge time.
+    ``_apply_stats_patch`` refreshes the cached retention value that the
+    patched closure reads at purge time.
     """
-    entries = hass.config_entries.async_entries(DOMAIN)
-    if not entries:
-        raise RuntimeError("recorder_tuning config entry not found")
-    entry = entries[0]
-    hass.config_entries.async_update_entry(
-        entry, data={**entry.data, CONF_STATS_KEEP_DAYS: days}
-    )
+    from custom_components.recorder_tuning import _apply_stats_patch  # noqa: PLC0415
+
+    manager = _get_manager(hass)
+    manager.config = {**manager.config, CONF_STATS_KEEP_DAYS: days}
+    _apply_stats_patch(hass, days)
 
 
 # ---------------------------------------------------------------------------

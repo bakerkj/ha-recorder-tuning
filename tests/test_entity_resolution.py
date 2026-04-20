@@ -53,8 +53,7 @@ def _make_manager(hass=None, entries=()):
     from custom_components.recorder_tuning import RecorderTuningManager
 
     mock_hass = hass or MagicMock()
-    mock_entry = MagicMock()
-    return RecorderTuningManager(mock_hass, mock_entry, [])
+    return RecorderTuningManager(mock_hass, {"rules": []})
 
 
 # ---------------------------------------------------------------------------

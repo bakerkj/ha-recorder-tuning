@@ -1,8 +1,8 @@
 {
   "domain": "recorder_tuning",
   "name": "Recorder Tuning",
-  "version": "0.0.2",
-  "config_flow": true,
+  "version": "0.0.3",
+  "config_flow": false,
   "integration_type": "service",
   "iot_class": "local_polling",
   "dependencies": ["recorder"],

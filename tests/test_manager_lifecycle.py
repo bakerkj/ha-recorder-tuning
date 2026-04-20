@@ -16,13 +16,12 @@ import pytest
 
 
 def _make_manager(rules, purge_time="03:00"):
-    """Return a manager whose ``entry.data`` yields ``purge_time``."""
+    """Return a manager configured with ``purge_time`` and the given rules."""
     from custom_components.recorder_tuning import RecorderTuningManager
 
     hass = MagicMock()
-    entry = MagicMock()
-    entry.data = {"purge_time": purge_time, "dry_run": False}
-    return RecorderTuningManager(hass, entry, list(rules))
+    config = {"purge_time": purge_time, "dry_run": False, "rules": list(rules)}
+    return RecorderTuningManager(hass, config)
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +41,7 @@ def test_schedule_purge_reinstalls_when_time_changes():
     ) as mock_track:
         manager._schedule_purge()
         # Change purge_time — next call should cancel + reinstall
-        manager.entry.data = {"purge_time": "04:30"}
+        manager.config = {"purge_time": "04:30"}
         manager._schedule_purge()
 
     assert mock_track.call_count == 2
@@ -52,7 +51,7 @@ def test_schedule_purge_reinstalls_when_time_changes():
 
 
 def test_schedule_purge_noop_when_time_unchanged():
-    """An options change that doesn't touch purge_time must not disturb the timer."""
+    """A reload that doesn't touch purge_time must not disturb the timer."""
     manager = _make_manager([], purge_time="03:00")
 
     unsub = MagicMock()
@@ -181,24 +180,12 @@ async def test_zero_match_suppression_clears_when_rule_recovers():
     assert "recoverable" not in manager._warned_empty_rules
 
 
-@pytest.mark.asyncio
-async def test_reload_clears_zero_match_suppression(monkeypatch):
-    """Calling reload resets the zero-match suppression set."""
-    import custom_components.recorder_tuning as mod
-    from custom_components.recorder_tuning import RecorderTuningManager
-
-    async def fake_executor(func, *args, **kwargs):
-        return func(*args, **kwargs)
-
-    hass = MagicMock()
-    hass.async_add_executor_job = fake_executor
-
-    manager = RecorderTuningManager(hass, MagicMock(), [])
+def test_update_config_clears_zero_match_suppression():
+    """Calling update_config resets the zero-match suppression set."""
+    manager = _make_manager([])
     manager._warned_empty_rules.add("rule_a")
     manager._warned_empty_rules.add("rule_b")
 
-    monkeypatch.setattr(mod, "_load_yaml_rules", lambda h: [])
-
-    await manager.async_service_reload(MagicMock())
+    manager.update_config({"purge_time": "03:00", "dry_run": False, "rules": []})
 
     assert manager._warned_empty_rules == set()

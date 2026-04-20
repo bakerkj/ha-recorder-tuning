@@ -35,9 +35,5 @@ DEFAULT_PURGE_TIME = "03:00"
 DEFAULT_STATS_KEEP_DAYS = 30
 DEFAULT_DRY_RUN = True
 
-# YAML config file — the only source of truth for purge rules. Lives in the
-# HA config dir alongside configuration.yaml.
-YAML_CONFIG_FILE = "recorder_tuning.yaml"
-
 # Dry-run mode
 CONF_DRY_RUN = "dry_run"

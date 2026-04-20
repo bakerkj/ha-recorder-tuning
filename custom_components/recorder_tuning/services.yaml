@@ -10,9 +10,8 @@ run_purge_now:
       description: >-
         When true, logs the entity name, row count, and date range of data that
         would be deleted for each rule — without deleting anything. When
-        omitted, inherits the dry_run setting from the integration's
-        configuration, so the service call behaves identically to the scheduled
-        nightly run.
+        omitted, inherits the dry_run setting from configuration.yaml, so the
+        service call behaves identically to the scheduled nightly run.
       required: false
       selector:
         boolean:
@@ -20,6 +19,7 @@ run_purge_now:
 reload:
   name: Reload
   description: >-
-    Reload rules from recorder_tuning.yaml in the HA config directory. Call this
-    after editing the file without restarting Home Assistant. If the file is
-    missing or invalid the integration runs with zero rules.
+    Reload the recorder_tuning configuration from configuration.yaml (including
+    any !include files). Call this after editing configuration.yaml without
+    restarting Home Assistant. If the YAML is invalid the reload fails and the
+    previous configuration is preserved.
