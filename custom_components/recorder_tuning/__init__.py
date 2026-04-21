@@ -819,6 +819,11 @@ class RecorderTuningManager:
             self._warned_empty_rules.discard(rule_name)
 
             keep_days = rule[CONF_KEEP_DAYS]  # required by _RULE_SCHEMA
+            # Per-rule prefix — mirrors _log_purge_plan so sibling lines
+            # in the log (plan summary, per-entity rows, complete) all
+            # share the same [DRY RUN] / [PURGE] tag for this rule, even
+            # if the run as a whole is [MIXED].
+            prefix = "[DRY RUN]" if rule_dry_run else "[PURGE]"
 
             # Always log what will be (or would be) purged before acting.
             # _log_purge_plan emits the summary, per-rule config dump, and
@@ -840,8 +845,10 @@ class RecorderTuningManager:
                 # as the task is queued, not after the delete).
                 await self._drain_recorder_queue(rule_name)
                 _LOGGER.info(
-                    "rule '%s' complete — %d entities",
+                    "%s rule '%s' (keep %dd) complete — %d entities",
+                    prefix,
                     rule_name,
+                    keep_days,
                     len(entity_ids),
                 )
 
