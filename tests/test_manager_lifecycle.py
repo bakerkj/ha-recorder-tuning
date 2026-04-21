@@ -395,8 +395,10 @@ def test_dry_run_summary_all_dry(caplog):
         "dry-run summary" in m and "0 rule(s) LIVE" in m and "2 rule(s) DRY RUN" in m
         for m in msgs
     )
-    # No minority list when one side is empty
-    assert not any(m.startswith("  [") for m in msgs)
+    # Every DRY rule listed; no LIVE lines.
+    assert any("[DRY RUN] a" in m for m in msgs)
+    assert any("[DRY RUN] b" in m for m in msgs)
+    assert not any(m.startswith("  [LIVE]") for m in msgs)
 
 
 def test_dry_run_summary_all_live(caplog):
@@ -414,17 +416,19 @@ def test_dry_run_summary_all_live(caplog):
         "dry-run summary" in m and "2 rule(s) LIVE" in m and "0 rule(s) DRY RUN" in m
         for m in msgs
     )
-    assert not any(m.startswith("  [") for m in msgs)
+    assert any("[LIVE] a" in m for m in msgs)
+    assert any("[LIVE] b" in m for m in msgs)
+    assert not any(m.startswith("  [DRY RUN]") for m in msgs)
 
 
 def test_dry_run_summary_mixed_lists_live_minority(caplog):
-    """Mixed with fewer LIVE than DRY → minority list labelled [LIVE] by name."""
+    """Mixed run → every rule listed, tagged [LIVE] or [DRY RUN]."""
     import logging
 
     rules = [
         _make_rule("alpha", dry_run=True),
         _make_rule("beta", dry_run=True),
-        _make_rule("gamma", dry_run=False),  # minority
+        _make_rule("gamma", dry_run=False),
     ]
     _, manager = _make_manager_with_full_config(rules)
     caplog.set_level(logging.INFO)
@@ -436,19 +440,18 @@ def test_dry_run_summary_mixed_lists_live_minority(caplog):
         for m in msgs
     )
     assert any("[LIVE] gamma" in m for m in msgs)
-    # Majority (DRY) members should not be listed
-    assert not any("[DRY RUN] alpha" in m for m in msgs)
-    assert not any("[DRY RUN] beta" in m for m in msgs)
+    assert any("[DRY RUN] alpha" in m for m in msgs)
+    assert any("[DRY RUN] beta" in m for m in msgs)
 
 
 def test_dry_run_summary_mixed_lists_dry_minority(caplog):
-    """Mixed with fewer DRY than LIVE → minority list labelled [DRY RUN]."""
+    """Inverse mix — still lists every rule on its correct side."""
     import logging
 
     rules = [
         _make_rule("alpha", dry_run=False),
         _make_rule("beta", dry_run=False),
-        _make_rule("gamma", dry_run=True),  # minority
+        _make_rule("gamma", dry_run=True),
     ]
     _, manager = _make_manager_with_full_config(rules)
     caplog.set_level(logging.INFO)
@@ -459,29 +462,13 @@ def test_dry_run_summary_mixed_lists_dry_minority(caplog):
         "dry-run summary" in m and "2 rule(s) LIVE" in m and "1 rule(s) DRY RUN" in m
         for m in msgs
     )
-    assert any("[DRY RUN] gamma" in m for m in msgs)
-    assert not any("[LIVE] alpha" in m for m in msgs)
-
-
-def test_dry_run_summary_tie_prefers_live(caplog):
-    """Equal split → LIVE list printed (documented tie-break)."""
-    import logging
-
-    rules = [
-        _make_rule("alpha", dry_run=False),
-        _make_rule("beta", dry_run=True),
-    ]
-    _, manager = _make_manager_with_full_config(rules)
-    caplog.set_level(logging.INFO)
-    manager._log_dry_run_summary()
-
-    msgs = [r.message for r in caplog.records]
     assert any("[LIVE] alpha" in m for m in msgs)
-    assert not any("[DRY RUN] beta" in m for m in msgs)
+    assert any("[LIVE] beta" in m for m in msgs)
+    assert any("[DRY RUN] gamma" in m for m in msgs)
 
 
 def test_dry_run_summary_skips_disabled_rules(caplog):
-    """Disabled rules must not appear in counts or minority list."""
+    """Disabled rules must not appear in counts or per-rule list."""
     import logging
 
     rules = [
@@ -501,27 +488,24 @@ def test_dry_run_summary_skips_disabled_rules(caplog):
     assert not any("disabled_live" in m for m in msgs)
 
 
-def test_dry_run_summary_minority_list_capped(caplog):
-    """Minority list longer than _DRY_RUN_LOG_CAP shows cap + overflow line."""
+def test_dry_run_summary_lists_every_enabled_rule(caplog):
+    """Every enabled rule is listed on its correct side — no truncation."""
     import logging
 
-    from custom_components.recorder_tuning import _DRY_RUN_LOG_CAP
-
-    # Majority LIVE so DRY becomes the minority; make DRY bigger than the cap.
-    minority_size = _DRY_RUN_LOG_CAP + 3
-    dry_rules = [_make_rule(f"dry_{i:03d}", dry_run=True) for i in range(minority_size)]
-    live_rules = [
-        _make_rule(f"live_{i:03d}", dry_run=False)
-        for i in range(minority_size + 10)  # clearly majority
-    ]
+    dry_count = 40
+    live_count = dry_count + 10
+    dry_rules = [_make_rule(f"dry_{i:03d}", dry_run=True) for i in range(dry_count)]
+    live_rules = [_make_rule(f"live_{i:03d}", dry_run=False) for i in range(live_count)]
     _, manager = _make_manager_with_full_config(dry_rules + live_rules)
     caplog.set_level(logging.INFO)
     manager._log_dry_run_summary()
 
     msgs = [r.message for r in caplog.records]
     dry_lines = [m for m in msgs if "[DRY RUN]" in m and "dry_" in m]
-    assert len(dry_lines) == _DRY_RUN_LOG_CAP
-    assert any(f"…and {minority_size - _DRY_RUN_LOG_CAP} more" in m for m in msgs)
+    live_lines = [m for m in msgs if "[LIVE]" in m and "live_" in m]
+    assert len(dry_lines) == dry_count
+    assert len(live_lines) == live_count
+    assert not any("more" in m for m in msgs)
 
 
 def test_dry_run_summary_empty_ruleset_logs_nothing(caplog):

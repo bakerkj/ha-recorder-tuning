@@ -80,10 +80,6 @@ _PURGE_BATCH_SIZE = 100
 # because a busy DB can spend minutes on a large purge; we'd rather warn
 # and move on than park the scheduled run forever on a wedged recorder.
 _PURGE_DRAIN_TIMEOUT = 600
-# Cap on the minority-list length in the dry-run summary logged on setup /
-# reload (_log_dry_run_summary). Beyond this the list is truncated with
-# "…and N more" so the startup log stays readable on large installs.
-_DRY_RUN_LOG_CAP = 25
 
 
 def _regex_pattern(value: str) -> str:
@@ -508,13 +504,9 @@ class RecorderTuningManager:
 
         Called on setup and on reload so the user can verify rollout state at
         a glance. Applies the same ``_effective_dry_run`` precedence the
-        scheduled run uses (service call = None), so the summary predicts what
-        the next nightly firing will do.
-
-        The minority set is listed by name (LIVE ties go to LIVE) so you can
-        see exactly which rules are in the non-majority mode — most useful
-        during rollout when only a few rules have been flipped to LIVE.
-        Capped at ``_DRY_RUN_LOG_CAP`` to stay readable on large installs.
+        scheduled run uses (service call = None), so the summary predicts
+        what the next nightly firing will do. Every enabled rule is listed
+        with its tag so rollout state is unambiguous.
         """
         top_level = self.config.get(CONF_DRY_RUN, DEFAULT_DRY_RUN)
         enabled = [r for r in self.rules if r.get(CONF_ENABLED, True)]
@@ -543,18 +535,10 @@ class RecorderTuningManager:
             len(dry),
         )
 
-        if not live or not dry:
-            return
-
-        minority, label = (live, "LIVE") if len(live) <= len(dry) else (dry, "DRY RUN")
-        for name in sorted(minority)[:_DRY_RUN_LOG_CAP]:
-            _LOGGER.info("  [%s] %s", label, name)
-        if len(minority) > _DRY_RUN_LOG_CAP:
-            _LOGGER.info(
-                "  [%s] …and %d more",
-                label,
-                len(minority) - _DRY_RUN_LOG_CAP,
-            )
+        for name in sorted(live):
+            _LOGGER.info("  [LIVE] %s", name)
+        for name in sorted(dry):
+            _LOGGER.info("  [DRY RUN] %s", name)
 
     def update_config(self, new_config: dict) -> None:
         """Swap in a new validated config block (called by the reload handler).
@@ -819,6 +803,11 @@ class RecorderTuningManager:
             self._warned_empty_rules.discard(rule_name)
 
             keep_days = rule[CONF_KEEP_DAYS]  # required by _RULE_SCHEMA
+            # Per-rule prefix — mirrors _log_purge_plan so sibling lines
+            # in the log (plan summary, per-entity rows, complete) all
+            # share the same [DRY RUN] / [PURGE] tag for this rule, even
+            # if the run as a whole is [MIXED].
+            prefix = "[DRY RUN]" if rule_dry_run else "[PURGE]"
 
             # Always log what will be (or would be) purged before acting.
             # _log_purge_plan emits the summary, per-rule config dump, and
@@ -840,8 +829,10 @@ class RecorderTuningManager:
                 # as the task is queued, not after the delete).
                 await self._drain_recorder_queue(rule_name)
                 _LOGGER.info(
-                    "rule '%s' complete — %d entities",
+                    "%s rule '%s' (keep %dd) complete — %d entities",
+                    prefix,
                     rule_name,
+                    keep_days,
                     len(entity_ids),
                 )
 
