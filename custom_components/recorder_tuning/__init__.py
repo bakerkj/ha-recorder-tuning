@@ -353,7 +353,7 @@ def _make_reload_handler(hass: HomeAssistant, manager: RecorderTuningManager):
         _apply_stats_patch(hass, new_domain_config[CONF_STATS_KEEP_DAYS])
         manager.update_config(new_domain_config)
         _LOGGER.info(
-            "recorder_tuning: reloaded from configuration.yaml — %d rule(s)",
+            "reloaded from configuration.yaml — %d rule(s)",
             len(manager.rules),
         )
         manager._log_dry_run_summary()
@@ -422,7 +422,7 @@ def _apply_stats_patch(hass: HomeAssistant, stats_keep_days: int) -> None:
         from homeassistant.components.recorder import purge as recorder_purge  # noqa: PLC0415
     except ImportError as err:
         _LOGGER.error(
-            "recorder_tuning: recorder.purge unavailable, stats patch not applied: %s",
+            "recorder.purge unavailable, stats patch not applied: %s",
             err,
         )
         return
@@ -430,7 +430,7 @@ def _apply_stats_patch(hass: HomeAssistant, stats_keep_days: int) -> None:
     current_fn = getattr(recorder_purge, "find_short_term_statistics_to_purge", None)
     if current_fn is None:
         _LOGGER.error(
-            "recorder_tuning: HA has removed find_short_term_statistics_to_purge — "
+            "HA has removed find_short_term_statistics_to_purge — "
             "stats patch not applied. Check tests/test_ha_signature_compat.py."
         )
         return
@@ -440,7 +440,7 @@ def _apply_stats_patch(hass: HomeAssistant, stats_keep_days: int) -> None:
         # the recorder module across tests, or after a reload). The module
         # variable updated above is enough — don't wrap it a second time.
         _LOGGER.debug(
-            "recorder_tuning: wrapper already present, reusing it (retention %d days)",
+            "wrapper already present, reusing it (retention %d days)",
             stats_keep_days,
         )
         return
@@ -457,7 +457,7 @@ def _apply_stats_patch(hass: HomeAssistant, stats_keep_days: int) -> None:
         # WARNING level so it's visible in the default HA log without any
         # logger config — proves the monkey-patch is firing on each purge.
         _LOGGER.warning(
-            "recorder_tuning: short-term stats cutoff %s → %s (%d days)",
+            "short-term stats cutoff %s → %s (%d days)",
             purge_before.isoformat(),
             effective_before.isoformat(),
             keep_days,
@@ -468,9 +468,7 @@ def _apply_stats_patch(hass: HomeAssistant, stats_keep_days: int) -> None:
     recorder_purge.find_short_term_statistics_to_purge = (
         patched_find_short_term_statistics_to_purge
     )
-    _LOGGER.info(
-        "recorder_tuning: short-term stats patch applied (%d days)", stats_keep_days
-    )
+    _LOGGER.info("short-term stats patch applied (%d days)", stats_keep_days)
 
 
 class RecorderTuningManager:
@@ -499,7 +497,7 @@ class RecorderTuningManager:
         """Schedule the daily purge."""
         self._schedule_purge()
         _LOGGER.info(
-            "recorder_tuning: loaded %d rule(s), scheduled at %s",
+            "loaded %d rule(s), scheduled at %s",
             len(self.rules),
             self.config.get(CONF_PURGE_TIME, DEFAULT_PURGE_TIME),
         )
@@ -523,8 +521,7 @@ class RecorderTuningManager:
 
         if top_level:
             _LOGGER.info(
-                "recorder_tuning: top-level dry_run: true — all %d enabled rule(s) "
-                "locked to DRY RUN",
+                "top-level dry_run: true — all %d enabled rule(s) locked to DRY RUN",
                 len(enabled),
             )
             return
@@ -541,7 +538,7 @@ class RecorderTuningManager:
             (dry if eff else live).append(rule[CONF_RULE_NAME])
 
         _LOGGER.info(
-            "recorder_tuning: dry-run summary — %d rule(s) LIVE, %d rule(s) DRY RUN",
+            "dry-run summary — %d rule(s) LIVE, %d rule(s) DRY RUN",
             len(live),
             len(dry),
         )
@@ -551,10 +548,10 @@ class RecorderTuningManager:
 
         minority, label = (live, "LIVE") if len(live) <= len(dry) else (dry, "DRY RUN")
         for name in sorted(minority)[:_DRY_RUN_LOG_CAP]:
-            _LOGGER.info("recorder_tuning:   [%s] %s", label, name)
+            _LOGGER.info("  [%s] %s", label, name)
         if len(minority) > _DRY_RUN_LOG_CAP:
             _LOGGER.info(
-                "recorder_tuning:   [%s] …and %d more",
+                "  [%s] …and %d more",
                 label,
                 len(minority) - _DRY_RUN_LOG_CAP,
             )
@@ -592,7 +589,7 @@ class RecorderTuningManager:
             purge_time = parse_hhmm(purge_time_str)
         except (TypeError, ValueError):
             _LOGGER.warning(
-                "recorder_tuning: invalid purge_time '%s', defaulting to %s",
+                "invalid purge_time '%s', defaulting to %s",
                 purge_time_str,
                 DEFAULT_PURGE_TIME,
             )
@@ -609,7 +606,7 @@ class RecorderTuningManager:
 
     async def _async_run_purge(self, now: datetime) -> None:
         """Run all enabled purge rules (scheduled nightly firing)."""
-        _LOGGER.info("recorder_tuning: starting scheduled purge run")
+        _LOGGER.info("starting scheduled purge run")
         # Scheduled runs have no service-call context; fall through to the
         # per-rule + top-level precedence inside _execute_all_rules.
         await self._execute_all_rules(service_dry_run=None)
@@ -664,7 +661,7 @@ class RecorderTuningManager:
             }
             if unknown:
                 _LOGGER.warning(
-                    "recorder_tuning: run_purge_now: unknown rule name(s): %s",
+                    "run_purge_now: unknown rule name(s): %s",
                     sorted(unknown),
                 )
             rules_arg = [
@@ -672,13 +669,12 @@ class RecorderTuningManager:
             ]
             if not rules_arg:
                 _LOGGER.warning(
-                    "recorder_tuning: run_purge_now: no rules matched %s — "
-                    "nothing to do",
+                    "run_purge_now: no rules matched %s — nothing to do",
                     sorted(requested_names),
                 )
                 return
             _LOGGER.info(
-                "recorder_tuning: run_purge_now service triggered for rule(s): %s%s",
+                "run_purge_now service triggered for rule(s): %s%s",
                 sorted(r[CONF_RULE_NAME] for r in rules_arg),
                 override_suffix,
             )
@@ -687,7 +683,7 @@ class RecorderTuningManager:
             # rule_names filter is present.
             trailing_arg = bool(call.data.get(CONF_HA_RECORDER_PURGE, False))
             _LOGGER.info(
-                "recorder_tuning: run_purge_now service triggered%s%s",
+                "run_purge_now service triggered%s%s",
                 " (includes global recorder.purge)" if trailing_arg else "",
                 override_suffix,
             )
@@ -763,9 +759,7 @@ class RecorderTuningManager:
         plan: list[tuple[dict, bool]] = []
         for rule in active_rules:
             if not rule.get(CONF_ENABLED, True):
-                _LOGGER.debug(
-                    "recorder_tuning: skipping disabled rule '%s'", rule[CONF_RULE_NAME]
-                )
+                _LOGGER.debug("skipping disabled rule '%s'", rule[CONF_RULE_NAME])
                 continue
             eff = _effective_dry_run(
                 top_level=top_level_dry_run,
@@ -781,19 +775,17 @@ class RecorderTuningManager:
         )
 
         if not plan:
-            _LOGGER.info("recorder_tuning: no enabled rules to run")
+            _LOGGER.info("no enabled rules to run")
             mode_label = "[DRY RUN]" if trailing_effective_dry else "[PURGE]"
         elif live_count == 0:
-            _LOGGER.info(
-                "recorder_tuning: [DRY RUN] starting — no data will be deleted"
-            )
+            _LOGGER.info("[DRY RUN] starting — no data will be deleted")
             mode_label = "[DRY RUN]"
         elif dry_count == 0:
-            _LOGGER.info("recorder_tuning: [PURGE] starting")
+            _LOGGER.info("[PURGE] starting")
             mode_label = "[PURGE]"
         else:
             _LOGGER.info(
-                "recorder_tuning: [MIXED] starting — %d rule(s) LIVE, %d rule(s) DRY RUN",
+                "[MIXED] starting — %d rule(s) LIVE, %d rule(s) DRY RUN",
                 live_count,
                 dry_count,
             )
@@ -810,14 +802,14 @@ class RecorderTuningManager:
                 # reload — or until the rule recovers — so we don't spam.
                 if rule_name not in self._warned_empty_rules:
                     _LOGGER.warning(
-                        "recorder_tuning: rule '%s' matched no entities, skipping "
+                        "rule '%s' matched no entities, skipping "
                         "(further zero-match runs will log at DEBUG until reload)",
                         rule_name,
                     )
                     self._warned_empty_rules.add(rule_name)
                 else:
                     _LOGGER.debug(
-                        "recorder_tuning: rule '%s' still matches no entities",
+                        "rule '%s' still matches no entities",
                         rule_name,
                     )
                 continue
@@ -848,7 +840,7 @@ class RecorderTuningManager:
                 # as the task is queued, not after the delete).
                 await self._drain_recorder_queue(rule_name)
                 _LOGGER.info(
-                    "recorder_tuning: rule '%s' complete — %d entities",
+                    "rule '%s' complete — %d entities",
                     rule_name,
                     len(entity_ids),
                 )
@@ -881,12 +873,12 @@ class RecorderTuningManager:
             )
             if trailing_effective_dry:
                 _LOGGER.info(
-                    "recorder_tuning: [DRY RUN] would call recorder.purge (repack=%s)",
+                    "[DRY RUN] would call recorder.purge (repack=%s)",
                     repack,
                 )
             else:
                 _LOGGER.info(
-                    "recorder_tuning: calling recorder.purge (repack=%s) — "
+                    "calling recorder.purge (repack=%s) — "
                     "this can take minutes on a large DB",
                     repack,
                 )
@@ -902,9 +894,9 @@ class RecorderTuningManager:
                     # or the service call may time out. We've already done
                     # the per-entity work, so log and move on rather than
                     # raising to the scheduler.
-                    _LOGGER.error("recorder_tuning: recorder.purge failed: %s", err)
+                    _LOGGER.error("recorder.purge failed: %s", err)
 
-        _LOGGER.info("recorder_tuning: %s complete", mode_label)
+        _LOGGER.info("%s complete", mode_label)
 
     async def _log_purge_plan(
         self,
@@ -949,7 +941,7 @@ class RecorderTuningManager:
             # exceptions, schema drift). A failed pre-purge log must never
             # break the rest of the purge run — log and move on.
             _LOGGER.error(
-                "recorder_tuning: %s rule '%s' — DB query failed: %s",
+                "%s rule '%s' — DB query failed: %s",
                 prefix,
                 rule_name,
                 err,
@@ -958,7 +950,7 @@ class RecorderTuningManager:
 
         if not results:
             _LOGGER.info(
-                "recorder_tuning: %s rule '%s' (keep %dd) — nothing to purge (checked %d entities, cutoff %s)",
+                "%s rule '%s' (keep %dd) — nothing to purge (checked %d entities, cutoff %s)",
                 prefix,
                 rule_name,
                 keep_days,
@@ -966,12 +958,12 @@ class RecorderTuningManager:
                 cutoff.strftime("%Y-%m-%d %H:%M UTC"),
             )
             for line in _rule_config_lines(rule):
-                _LOGGER.info("recorder_tuning: %s   %s", prefix, line)
+                _LOGGER.info("%s   %s", prefix, line)
             return
 
         total_rows = sum(cnt for cnt, _ in results.values())
         _LOGGER.info(
-            "recorder_tuning: %s rule '%s' (keep %dd) — %d of %d matched entities have "
+            "%s rule '%s' (keep %dd) — %d of %d matched entities have "
             "data older than %s (%d rows total)",
             prefix,
             rule_name,
@@ -982,11 +974,11 @@ class RecorderTuningManager:
             total_rows,
         )
         for line in _rule_config_lines(rule):
-            _LOGGER.info("recorder_tuning: %s   %s", prefix, line)
+            _LOGGER.info("%s   %s", prefix, line)
         for entity_id, (cnt, oldest_ts) in sorted(results.items()):
             oldest = datetime.fromtimestamp(oldest_ts, tz=timezone.utc)
             _LOGGER.info(
-                "recorder_tuning: %s   %-60s  %6d rows  %s → %s",
+                "%s   %-60s  %6d rows  %s → %s",
                 prefix,
                 entity_id,
                 cnt,
@@ -1103,7 +1095,7 @@ class RecorderTuningManager:
         for eid in resolved:
             if not self.hass.states.get(eid):
                 _LOGGER.debug(
-                    "recorder_tuning: rule '%s': entity '%s' not in state machine",
+                    "rule '%s': entity '%s' not in state machine",
                     rule[CONF_RULE_NAME],
                     eid,
                 )

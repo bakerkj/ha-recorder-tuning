@@ -396,7 +396,7 @@ def test_dry_run_summary_all_dry(caplog):
         for m in msgs
     )
     # No minority list when one side is empty
-    assert not any(m.startswith("recorder_tuning:   [") for m in msgs)
+    assert not any(m.startswith("  [") for m in msgs)
 
 
 def test_dry_run_summary_all_live(caplog):
@@ -414,7 +414,7 @@ def test_dry_run_summary_all_live(caplog):
         "dry-run summary" in m and "2 rule(s) LIVE" in m and "0 rule(s) DRY RUN" in m
         for m in msgs
     )
-    assert not any(m.startswith("recorder_tuning:   [") for m in msgs)
+    assert not any(m.startswith("  [") for m in msgs)
 
 
 def test_dry_run_summary_mixed_lists_live_minority(caplog):
