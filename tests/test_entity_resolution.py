@@ -56,6 +56,14 @@ def _make_manager(hass=None, entries=()):
     return RecorderTuningManager(mock_hass, {"rules": []})
 
 
+def _hass_with_states(*entity_ids):
+    """Return a MagicMock hass whose states.async_all() yields the given ids."""
+    states = [MagicMock(entity_id=eid) for eid in entity_ids]
+    hass = MagicMock()
+    hass.states.async_all.return_value = states
+    return hass
+
+
 # ---------------------------------------------------------------------------
 # Entity ID resolution
 # ---------------------------------------------------------------------------
@@ -96,6 +104,49 @@ def test_resolve_glob_pattern():
     result = manager._resolve_entities(rule, reg)
     assert "sensor.frigate_cam1_fps" in result
     assert "sensor.frigate_cam2_fps" in result
+    assert "sensor.cpu_usage" not in result
+
+
+def test_resolve_regex_matches_unregistered_state_machine_entity():
+    """Regex selector must find entities present only in the state machine.
+
+    Covers yaml-configured MQTT sensors etc. that never enter the entity
+    registry — the rule engine now unions registry + state machine when
+    resolving regex/glob patterns.
+    """
+    hass = _hass_with_states(
+        "sensor.container_foo_network_rx_total",  # unregistered, in state machine only
+        "sensor.cpu_usage",  # unregistered, should NOT match regex
+    )
+    manager = _make_manager(hass=hass)
+    reg = _make_registry()  # intentionally empty — prove we don't need a registry entry
+    rule = {
+        CONF_RULE_NAME: "r",
+        CONF_ENTITY_REGEX_INCLUDE: [r"^sensor\.container_.*_total$"],
+        CONF_KEEP_DAYS: 8,
+        CONF_ENABLED: True,
+    }
+    result = manager._resolve_entities(rule, reg)
+    assert "sensor.container_foo_network_rx_total" in result
+    assert "sensor.cpu_usage" not in result
+
+
+def test_resolve_glob_matches_unregistered_state_machine_entity():
+    """Glob selector also sees state-machine-only entities."""
+    hass = _hass_with_states(
+        "sensor.container_bar_io_write_total",
+        "sensor.cpu_usage",
+    )
+    manager = _make_manager(hass=hass)
+    reg = _make_registry()
+    rule = {
+        CONF_RULE_NAME: "r",
+        CONF_ENTITY_GLOBS: ["sensor.container_*_total"],
+        CONF_KEEP_DAYS: 8,
+        CONF_ENABLED: True,
+    }
+    result = manager._resolve_entities(rule, reg)
+    assert "sensor.container_bar_io_write_total" in result
     assert "sensor.cpu_usage" not in result
 
 

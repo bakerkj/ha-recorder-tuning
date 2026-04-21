@@ -1003,18 +1003,29 @@ class RecorderTuningManager:
         entity does not record new states, but it may still have recorded
         history from before it was disabled — and that history is exactly
         what purge rules need to reach.
+
+        Glob and regex selectors see both registered entities AND entities
+        that exist only in the state machine (e.g., old-style yaml-defined
+        MQTT sensors that bypass the entity registry). ``integration_filter``
+        and ``device_ids`` remain registry-only because the state machine
+        carries no integration/device metadata to match against.
         """
         match_mode = rule.get(CONF_MATCH_MODE, DEFAULT_MATCH_MODE)
         all_entries: list[er.RegistryEntry] = list(ent_reg.entities.values())
 
         # Glob and regex selectors both walk the full entity-id list. Build it
         # lazily so rules that don't use those selectors skip the allocation.
+        # The list is the union of registry-known entities and whatever is
+        # currently in the state machine; the latter captures yaml-defined
+        # entities that never made it into the registry.
         _all_entity_ids_cache: list[str] | None = None
 
         def all_entity_ids() -> list[str]:
             nonlocal _all_entity_ids_cache
             if _all_entity_ids_cache is None:
-                _all_entity_ids_cache = [e.entity_id for e in all_entries]
+                ids: set[str] = {e.entity_id for e in all_entries}
+                ids.update(s.entity_id for s in self.hass.states.async_all())
+                _all_entity_ids_cache = sorted(ids)
             return _all_entity_ids_cache
 
         # --- Positive selectors: one set per *present* selector ---
