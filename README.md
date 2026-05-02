@@ -77,9 +77,9 @@ purges a day instead of one.
     - "_wifi_signal$"
   keep_days: 7
 
-- name: Davis weather station
+- name: Weather station via MQTT
   integration_filter: [mqtt]
-  entity_regex_include: ["^sensor\\.davis_"]
+  entity_regex_include: ["^sensor\\.weather_station_"]
   keep_days: 30
 ```
 
@@ -116,8 +116,8 @@ Example log output:
 
 ```
 [PURGE] rule 'ESPHome diagnostic sensors' (keep 7d) — 241 of 331 matched entities have data older than 2026-03-29 03:00 UTC (8,432,180 rows total)
-[PURGE]   sensor.workshop_co2_uptime                            142543 rows  2026-01-01 00:00 UTC → 2026-03-29 03:00 UTC
-[PURGE]   sensor.porch_light_voltage                             98201 rows  2026-01-15 08:12 UTC → 2026-03-29 03:00 UTC
+[PURGE]   sensor.example_node_uptime                            142543 rows  2026-01-01 00:00 UTC → 2026-03-29 03:00 UTC
+[PURGE]   sensor.example_node_voltage                            98201 rows  2026-01-15 08:12 UTC → 2026-03-29 03:00 UTC
 [PURGE] rule 'Ping RTT' (keep 14d) — nothing to purge
 ```
 
