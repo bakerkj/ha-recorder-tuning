@@ -15,7 +15,7 @@ jobs:
   ha-dev-signature:
     runs-on: ubuntu-latest
     # Informational only — a red cross here means HA upstream changed, not
-    # that this branch is broken. Merges to master are not blocked.
+    # that this branch is broken. Merges to main are not blocked.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v6.0.2
