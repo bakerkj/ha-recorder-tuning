@@ -308,3 +308,18 @@ aggressively than the recorder would by default.
   configuration.
 - Removing the `recorder_tuning:` block and restarting HA restores the original
   short-term statistics purge behavior.
+
+## Development
+
+Commits must follow the
+[Conventional Commits](https://www.conventionalcommits.org/) spec —
+release-please uses commit prefixes (`feat:`, `fix:`, etc.) to drive version
+bumps. Install the pre-commit hooks **including the commit-msg hook** (the
+default `pre-commit install` only wires up pre-commit-stage hooks):
+
+```
+uvx pre-commit install --hook-type pre-commit --hook-type commit-msg
+```
+
+Without `--hook-type commit-msg`, malformed commit messages won't be caught
+locally — CI (`Commitlint` workflow) will still reject them.
