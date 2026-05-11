@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.0.11](https://github.com/bakerkj/ha-recorder-tuning/compare/v0.0.10...v0.0.11) (2026-05-11)
+
+
+### Miscellaneous Chores
+
+* migrate prettier hook to maintained rbubley mirror ([4beb8b6](https://github.com/bakerkj/ha-recorder-tuning/commit/4beb8b6682f12c6db4242a1687b8e70010f4be42))
+* migrate prettier hook to maintained rbubley mirror ([f48849b](https://github.com/bakerkj/ha-recorder-tuning/commit/f48849bed9bbbb09d7e0a678f24a12446482ba64))
+
+
+### Continuous Integration
+
+* pin ubuntu-latest runners to ubuntu-24.04 for renovate tracking ([68c3218](https://github.com/bakerkj/ha-recorder-tuning/commit/68c3218baeda77157e7e6d9b95ba684fb706a774))
+* pin ubuntu-latest runners to ubuntu-24.04 for renovate tracking ([b9dced7](https://github.com/bakerkj/ha-recorder-tuning/commit/b9dced777cfca00eca9ab37b578db3ecb784c126))
+* run mypy against real runtime deps, drop --ignore-missing-imports ([f69945c](https://github.com/bakerkj/ha-recorder-tuning/commit/f69945c8ae7dbb7db547842dce0665500df82405))
+* run mypy against real runtime deps, drop --ignore-missing-imports ([8453880](https://github.com/bakerkj/ha-recorder-tuning/commit/84538808a7f9f712e38d8d67f4e931b79e14f4f5))
+
 ## [0.0.10](https://github.com/bakerkj/ha-recorder-tuning/compare/v0.0.9...v0.0.10) (2026-05-10)
 
 
