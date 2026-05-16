@@ -26,6 +26,11 @@
           "path": "custom_components/recorder_tuning/manifest.json",
           "jsonpath": "$.version"
         },
+        {
+          "type": "toml",
+          "path": "uv.lock",
+          "jsonpath": "$.package[?(@.name.value=='ha-recorder-tuning')].version"
+        },
         "pyproject.toml"
       ]
     }

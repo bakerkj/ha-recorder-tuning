@@ -926,7 +926,7 @@ wheels = [
 
 [[package]]
 name = "ha-recorder-tuning"
-version = "0.0.10"
+version = "0.0.11"
 source = { virtual = "." }
 
 [package.dev-dependencies]
