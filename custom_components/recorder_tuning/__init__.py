@@ -571,7 +571,7 @@ class RecorderTuningManager:
 
         try:
             purge_time = parse_hhmm(purge_time_str)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             _LOGGER.warning(
                 "invalid purge_time '%s', defaulting to %s",
                 purge_time_str,
