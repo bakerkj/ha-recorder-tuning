@@ -16,12 +16,14 @@ import voluptuous as vol
 from homeassistant.config import async_hass_config_yaml
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
     CONF_DEVICE_IDS,
+    CONF_DEVICE_INTEGRATION_FILTER,
     CONF_DRY_RUN,
     DEFAULT_DRY_RUN,
     CONF_ENABLED,
@@ -155,6 +157,7 @@ def _effective_dry_run(
 # rules are filtered out before this log fires.
 _RULE_CONFIG_LOG_KEYS = (
     CONF_INTEGRATION_FILTER,
+    CONF_DEVICE_INTEGRATION_FILTER,
     CONF_DEVICE_IDS,
     CONF_ENTITY_IDS,
     CONF_ENTITY_GLOBS,
@@ -201,6 +204,7 @@ _RULE_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_RULE_NAME): str,
         vol.Optional(CONF_INTEGRATION_FILTER, default=[]): [str],
+        vol.Optional(CONF_DEVICE_INTEGRATION_FILTER, default=[]): [str],
         vol.Optional(CONF_DEVICE_IDS, default=[]): [str],
         vol.Optional(CONF_ENTITY_IDS, default=[]): [str],
         vol.Optional(CONF_ENTITY_GLOBS, default=[]): [str],
@@ -1006,9 +1010,18 @@ class RecorderTuningManager:
 
         Glob and regex selectors see both registered entities AND entities
         that exist only in the state machine (e.g., old-style yaml-defined
-        MQTT sensors that bypass the entity registry). ``integration_filter``
-        and ``device_ids`` remain registry-only because the state machine
-        carries no integration/device metadata to match against.
+        MQTT sensors that bypass the entity registry). ``integration_filter``,
+        ``device_integration_filter`` and ``device_ids`` remain registry-only
+        because the state machine carries no integration/device metadata to
+        match against.
+
+        ``integration_filter`` matches an entity's own platform (the
+        integration that created it). ``device_integration_filter`` matches the
+        integration that owns the entity's *device* instead — useful when an
+        entity is created by one integration but attached to another's device
+        (e.g. a recorder_downsampler mirror glued onto its greeneye_monitor
+        source's device). Pairing the two under ``match_mode: all`` selects
+        exactly those entities.
         """
         match_mode = rule.get(CONF_MATCH_MODE, DEFAULT_MATCH_MODE)
         all_entries: list[er.RegistryEntry] = list(ent_reg.entities.values())
@@ -1042,6 +1055,36 @@ class RecorderTuningManager:
             wanted = set(integrations)
             selector_sets.append(
                 {e.entity_id for e in all_entries if e.platform in wanted}
+            )
+
+        # Device-integration filter → entities whose *device* belongs to one of
+        # the named integrations (vs. integration_filter, which matches the
+        # entity's own platform). An entity's device can be owned by a different
+        # integration than the entity itself — e.g. a recorder_downsampler
+        # mirror sensor is glued onto its source's greeneye_monitor device, so
+        # `device_integration_filter: [greeneye_monitor]` reaches it where
+        # `integration_filter` cannot. Resolve each device's integrations once,
+        # then match entities by their device_id.
+        device_integrations = rule.get(CONF_DEVICE_INTEGRATION_FILTER) or []
+        if device_integrations:
+            wanted_dev = set(device_integrations)
+            dev_reg = dr.async_get(self.hass)
+            matching_device_ids: set[str] = set()
+            for device in dev_reg.devices.values():
+                domains = {
+                    cfg_entry.domain
+                    for cfg_entry_id in device.config_entries
+                    if (
+                        cfg_entry := self.hass.config_entries.async_get_entry(
+                            cfg_entry_id
+                        )
+                    )
+                    is not None
+                }
+                if wanted_dev & domains:
+                    matching_device_ids.add(device.id)
+            selector_sets.append(
+                {e.entity_id for e in all_entries if e.device_id in matching_device_ids}
             )
 
         # Device IDs → all entities under that device, including disabled
