@@ -189,22 +189,46 @@ subtracts from the final set, regardless of `match_mode`.
 
 ### Rule fields
 
-| Field                  | Type            | Required   | Description                                                                                                                       |
-| ---------------------- | --------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `name`                 | string          | yes        | Identifier for the rule (free-form).                                                                                              |
-| `keep_days`            | int, 1-365      | yes        | Days of recorder history to retain for matched entities.                                                                          |
-| `enabled`              | bool            | no (true)  | Set to `false` to suspend a rule without deleting it.                                                                             |
-| `dry_run`              | bool            | no         | Per-rule override. If set, forces this rule into dry-run (`true`) or live (`false`) regardless of the top-level setting.          |
-| `match_mode`           | `all` \| `any`  | no (`all`) | How positive selectors combine within the rule. `all` = intersection; `any` = union.                                              |
-| `integration_filter`   | list of strings | no         | Integration/platform names, e.g. `[frigate, esphome]`.                                                                            |
-| `device_ids`           | list of strings | no         | Device IDs. All entities under each device (including disabled ones) are included. Find IDs at Settings → Devices → (device) URL. |
-| `entity_ids`           | list of strings | no         | Explicit entity IDs.                                                                                                              |
-| `entity_globs`         | list of strings | no         | Glob patterns matched against all registered entity IDs, e.g. `sensor.frigate_*_fps`.                                             |
-| `entity_regex_include` | list of regexes | no         | Entities matching any pattern.                                                                                                    |
-| `entity_regex_exclude` | list of regexes | no         | Entities matching any pattern are removed from the candidate set after positive selectors have run.                               |
+| Field                       | Type            | Required   | Description                                                                                                                                                                 |
+| --------------------------- | --------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`                      | string          | yes        | Identifier for the rule (free-form).                                                                                                                                        |
+| `keep_days`                 | int, 1-365      | yes        | Days of recorder history to retain for matched entities.                                                                                                                    |
+| `enabled`                   | bool            | no (true)  | Set to `false` to suspend a rule without deleting it.                                                                                                                       |
+| `dry_run`                   | bool            | no         | Per-rule override. If set, forces this rule into dry-run (`true`) or live (`false`) regardless of the top-level setting.                                                    |
+| `match_mode`                | `all` \| `any`  | no (`all`) | How positive selectors combine within the rule. `all` = intersection; `any` = union.                                                                                        |
+| `integration_filter`        | list of strings | no         | Integration/platform names, e.g. `[frigate, esphome]`. Matches an entity's own platform (the integration that created it).                                                  |
+| `device_integration_filter` | list of strings | no         | Integration names matched against the entity's **device** (not its own platform). Reaches entities created by one integration but attached to another's device — see below. |
+| `device_ids`                | list of strings | no         | Device IDs. All entities under each device (including disabled ones) are included. Find IDs at Settings → Devices → (device) URL.                                           |
+| `entity_ids`                | list of strings | no         | Explicit entity IDs.                                                                                                                                                        |
+| `entity_globs`              | list of strings | no         | Glob patterns matched against all registered entity IDs, e.g. `sensor.frigate_*_fps`.                                                                                       |
+| `entity_regex_include`      | list of regexes | no         | Entities matching any pattern.                                                                                                                                              |
+| `entity_regex_exclude`      | list of regexes | no         | Entities matching any pattern are removed from the candidate set after positive selectors have run.                                                                         |
 
-At least one positive selector (`integration_filter`, `device_ids`,
-`entity_ids`, `entity_globs`, or `entity_regex_include`) is required per rule.
+At least one positive selector (`integration_filter`,
+`device_integration_filter`, `device_ids`, `entity_ids`, `entity_globs`, or
+`entity_regex_include`) is required per rule.
+
+### Targeting entities by their device's integration
+
+`integration_filter` matches an entity's own platform — the integration that
+_created_ it. `device_integration_filter` matches the integration that owns the
+entity's **device** instead, reaching entities created by one integration but
+attached to another's device (where `integration_filter` alone cannot isolate
+them).
+
+The canonical case is a
+[recorder_downsampler](https://github.com/bakerkj/ha-recorder-downsampler)
+mirror sensor: created by `recorder_downsampler` but glued onto its source's
+device. Pair the two selectors (under the default `match_mode: all`) to select
+the mirrors of one source integration:
+
+```yaml
+- name: Downsampler mirrors of GreenEye sources
+  integration_filter: [recorder_downsampler] # created by the downsampler
+  device_integration_filter: [greeneye_monitor] # …and on a GreenEye device
+  keep_days: 15
+```
+
 Invalid YAML fails the whole `recorder_tuning:` block at startup (or the reload
 call) — nothing is partially applied.
 

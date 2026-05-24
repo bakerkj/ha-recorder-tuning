@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 from custom_components.recorder_tuning.const import (
     CONF_DEVICE_IDS,
+    CONF_DEVICE_INTEGRATION_FILTER,
     CONF_ENABLED,
     CONF_ENTITY_GLOBS,
     CONF_ENTITY_IDS,
@@ -656,3 +657,157 @@ def test_resolve_explicit_entity_id_honoured_when_disabled():
     }
     result = manager._resolve_entities(rule, reg)
     assert "sensor.foo" in result
+
+
+# ---------------------------------------------------------------------------
+# Device-integration filter — match by the integration that owns the entity's
+# *device*, not the entity's own platform. The motivating case: a
+# recorder_downsampler mirror sensor is created by recorder_downsampler but
+# glued onto its source's device (e.g. greeneye_monitor), so it can only be
+# isolated by combining its platform with its device's integration.
+# ---------------------------------------------------------------------------
+
+
+def _make_device(device_id: str, *config_entry_ids: str):
+    device = MagicMock()
+    device.id = device_id
+    device.config_entries = set(config_entry_ids)
+    return device
+
+
+def _hass_with_devices(devices, entry_domains):
+    """A hass whose config_entries.async_get_entry maps entry_id -> .domain."""
+
+    def _get_entry(entry_id):
+        domain = entry_domains.get(entry_id)
+        if domain is None:
+            return None
+        return MagicMock(domain=domain)
+
+    hass = MagicMock()
+    hass.config_entries.async_get_entry.side_effect = _get_entry
+    dev_reg = MagicMock()
+    dev_reg.devices = {d.id: d for d in devices}
+    return hass, dev_reg
+
+
+def test_resolve_device_integration_filter_alone():
+    """Matches every entity on a device owned by the named integration."""
+    hass, dev_reg = _hass_with_devices(
+        devices=[
+            _make_device("dev_geye", "ce_geye", "ce_ds"),
+            _make_device("dev_wled", "ce_wled", "ce_ds"),
+        ],
+        entry_domains={
+            "ce_geye": "greeneye_monitor",
+            "ce_wled": "wled",
+            "ce_ds": "recorder_downsampler",
+        },
+    )
+    manager = _make_manager(hass=hass)
+    reg = _make_registry(
+        _make_entry(
+            "sensor.rack_power", platform="greeneye_monitor", device_id="dev_geye"
+        ),
+        _make_entry(
+            "sensor.rack_power_recorded",
+            platform="recorder_downsampler",
+            device_id="dev_geye",
+        ),
+        _make_entry(
+            "sensor.wled_rssi_recorded",
+            platform="recorder_downsampler",
+            device_id="dev_wled",
+        ),
+        _make_entry("sensor.no_device", platform="average", device_id=None),
+    )
+    rule = {
+        CONF_RULE_NAME: "r",
+        CONF_DEVICE_INTEGRATION_FILTER: ["greeneye_monitor"],
+        CONF_KEEP_DAYS: 30,
+        CONF_ENABLED: True,
+    }
+    with patch(
+        "custom_components.recorder_tuning.__init__.dr.async_get",
+        return_value=dev_reg,
+    ):
+        result = manager._resolve_entities(rule, reg)
+    # Everything on the GreenEye device — the raw source AND its mirror — but
+    # nothing on the WLED device or without a device.
+    assert result == ["sensor.rack_power", "sensor.rack_power_recorded"]
+
+
+def test_double_integration_filter_isolates_downsampler_mirrors():
+    """integration_filter (platform) + device_integration_filter (device) under
+    the default match_mode 'all' selects exactly the GreenEye mirrors."""
+    hass, dev_reg = _hass_with_devices(
+        devices=[
+            _make_device("dev_geye", "ce_geye", "ce_ds"),
+            _make_device("dev_wled", "ce_wled", "ce_ds"),
+        ],
+        entry_domains={
+            "ce_geye": "greeneye_monitor",
+            "ce_wled": "wled",
+            "ce_ds": "recorder_downsampler",
+        },
+    )
+    manager = _make_manager(hass=hass)
+    reg = _make_registry(
+        # the target: mirror created by recorder_downsampler, on a GreenEye device
+        _make_entry(
+            "sensor.rack_power_recorded",
+            platform="recorder_downsampler",
+            device_id="dev_geye",
+        ),
+        # raw GreenEye source: right device, wrong platform
+        _make_entry(
+            "sensor.rack_power", platform="greeneye_monitor", device_id="dev_geye"
+        ),
+        # mirror of a non-GreenEye source: right platform, wrong device
+        _make_entry(
+            "sensor.wled_rssi_recorded",
+            platform="recorder_downsampler",
+            device_id="dev_wled",
+        ),
+        # an 'average'-platform _recorded helper with no device
+        _make_entry("sensor.average_temp_recorded", platform="average", device_id=None),
+    )
+    rule = {
+        CONF_RULE_NAME: "r",
+        CONF_INTEGRATION_FILTER: ["recorder_downsampler"],
+        CONF_DEVICE_INTEGRATION_FILTER: ["greeneye_monitor"],
+        CONF_KEEP_DAYS: 90,
+        CONF_ENABLED: True,
+    }
+    with patch(
+        "custom_components.recorder_tuning.__init__.dr.async_get",
+        return_value=dev_reg,
+    ):
+        result = manager._resolve_entities(rule, reg)
+    assert result == ["sensor.rack_power_recorded"]
+
+
+def test_device_integration_filter_no_match_returns_empty():
+    """A device-integration that owns no device yields no entities."""
+    hass, dev_reg = _hass_with_devices(
+        devices=[_make_device("dev_geye", "ce_geye")],
+        entry_domains={"ce_geye": "greeneye_monitor"},
+    )
+    manager = _make_manager(hass=hass)
+    reg = _make_registry(
+        _make_entry(
+            "sensor.rack_power", platform="greeneye_monitor", device_id="dev_geye"
+        ),
+    )
+    rule = {
+        CONF_RULE_NAME: "r",
+        CONF_DEVICE_INTEGRATION_FILTER: ["nonexistent_integration"],
+        CONF_KEEP_DAYS: 30,
+        CONF_ENABLED: True,
+    }
+    with patch(
+        "custom_components.recorder_tuning.__init__.dr.async_get",
+        return_value=dev_reg,
+    ):
+        result = manager._resolve_entities(rule, reg)
+    assert result == []

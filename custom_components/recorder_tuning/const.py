@@ -16,6 +16,13 @@ CONF_KEEP_DAYS = "keep_days"
 
 # Rule target selectors
 CONF_INTEGRATION_FILTER = "integration_filter"  # list of integration/platform names
+# Match by the integration that owns the entity's *device* (not the entity's own
+# platform). Lets a rule target entities created by one integration but attached
+# to another integration's device — e.g. recorder_downsampler mirror sensors,
+# which are owned by recorder_downsampler yet glued onto the source's device
+# (greeneye_monitor, …). Combine with CONF_INTEGRATION_FILTER under the default
+# match_mode "all" to pin down exactly those entities.
+CONF_DEVICE_INTEGRATION_FILTER = "device_integration_filter"
 CONF_DEVICE_IDS = "device_ids"
 CONF_ENTITY_IDS = "entity_ids"
 CONF_ENTITY_GLOBS = "entity_globs"

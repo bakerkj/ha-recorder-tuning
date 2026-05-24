@@ -124,6 +124,7 @@ def test_rule_defaults_filled():
         "name": "minimal",
         "keep_days": 7,
         "integration_filter": [],
+        "device_integration_filter": [],
         "device_ids": [],
         "entity_ids": [],
         "entity_globs": [],
