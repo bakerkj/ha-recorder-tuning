@@ -21,7 +21,11 @@ jobs:
       - uses: actions/checkout@v6.0.2
       - uses: astral-sh/setup-uv@v8.1.0
         with:
-          enable-cache: false
+          # Cache the pinned-dep install (keyed on uv.lock). Safe vs. the HA
+          # dev override below: `uv pip install git+https://...@dev` re-resolves
+          # the moving branch tip every run and is never satisfied from cache.
+          enable-cache: true
+          cache-suffix: ha-dev-compat
       - uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.14"
