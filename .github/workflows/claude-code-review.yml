@@ -56,7 +56,11 @@ jobs:
 
             1. Bugs — logic errors, race conditions, off-by-ones,
                broken edge cases. If you find one, leave an inline
-               comment at the specific line.
+               comment at the specific line. Changes to short-term
+               statistics handling and any data-migration code paths
+               are the highest-impact bug surfaces — issues there
+               can cause major user-visible headaches. Prioritize
+               coverage of those.
             2. HA integration correctness.
             3. Security.
 
