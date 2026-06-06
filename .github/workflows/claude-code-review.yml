@@ -56,12 +56,11 @@ jobs:
 
             1. Bugs — logic errors, race conditions, off-by-ones,
                broken edge cases. If you find one, leave an inline
-               comment at the specific line. Changes to short-term
-               statistics handling and any data-migration code paths
-               are the highest-impact bug surfaces — issues there
-               can cause major user-visible headaches. Prioritize
-               coverage of those.
-            2. HA integration correctness.
+               comment at the specific line.
+            2. HA integration correctness. Highest-impact surfaces
+               (regressions here cause major user-visible headaches):
+               - short-term statistics handling
+               - data-migration code paths
             3. Security.
 
             Hard rules:
