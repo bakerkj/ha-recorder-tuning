@@ -18,7 +18,7 @@ jobs:
     # that this branch is broken. Merges to main are not blocked.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
       - uses: astral-sh/setup-uv@v8.2.0
         with:
           # Cache the pinned-dep install (keyed on uv.lock). Safe vs. the HA
