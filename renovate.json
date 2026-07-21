@@ -28,7 +28,7 @@
       "description": "npm packages pinned via pre-commit additional_dependencies",
       "managerFilePatterns": ["/^\\.pre-commit-config\\.yaml$/"],
       "matchStrings": [
-        "\"(?<depName>@?[^\"@\\s]+(?:/[^\"@\\s]+)?)@(?<currentValue>[^\"\\s]+)\""
+        "\"(?<depName>@?[^\"@\\s]+)@(?<currentValue>[^\"\\s]+)\""
       ],
       "datasourceTemplate": "npm",
       "versioningTemplate": "npm"
