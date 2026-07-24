@@ -104,6 +104,51 @@ def test_top_level_rejects_bad_purge_time():
         _validate({"purge_time": "24:00", "rules": []})
 
 
+# ---------------------------------------------------------------------------
+# parse_hhmm contract (pins the HH:MM parser behaviour so future refactors
+# can't silently drift from the documented "0-23 hour / 0-59 minute" rule).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("03:00", (3, 0)),
+        ("3:00", (3, 0)),  # unpadded hour is accepted
+        ("23:59", (23, 59)),
+        ("00:00", (0, 0)),
+        ("3:5", (3, 5)),  # unpadded minute is accepted
+    ],
+)
+def test_parse_hhmm_accepts_valid_times(value, expected):
+    from datetime import time
+
+    from custom_components.recorder_tuning import parse_hhmm
+
+    result = parse_hhmm(value)
+    assert result == time(*expected)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "24:00",  # hour out of range
+        "12:60",  # minute out of range
+        "03:00:00",  # too many fields
+        "0300",  # missing separator
+        "",  # empty
+        "abc",  # non-numeric
+        "-1:00",  # negative
+        "+3:00",  # signed
+    ],
+)
+def test_parse_hhmm_rejects_bad_times(value):
+    from custom_components.recorder_tuning import parse_hhmm
+
+    with pytest.raises(ValueError):
+        parse_hhmm(value)
+
+
 def test_top_level_rejects_out_of_range_stats_keep_days():
     with pytest.raises(vol.Invalid):
         _validate({"stats_keep_days": 0, "rules": []})

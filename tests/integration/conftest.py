@@ -11,19 +11,19 @@ external service.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from homeassistant.helpers import entity_registry as er
 from homeassistant.components.recorder.db_schema import (
+    States,
+    StatesMeta,
     Statistics,
     StatisticsMeta,
     StatisticsShortTerm,
-    States,
-    StatesMeta,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.recorder import session_scope
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.components.recorder.common import (
@@ -47,7 +47,7 @@ from custom_components.recorder_tuning.const import (
 # Fixed time reference — all tests are anchored relative to this instant.
 # ---------------------------------------------------------------------------
 
-NOW = datetime(2026, 4, 4, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 4, 4, 12, 0, 0, tzinfo=UTC)
 
 # Recorder global purge window (days of raw-state history to keep)
 PURGE_KEEP_DAYS = 5
@@ -92,7 +92,7 @@ async def recorder_hass(
     recorder_mock: Any,
     enable_custom_integrations: None,
     freezer: Any,
-) -> AsyncGenerator[HomeAssistant, None]:
+) -> AsyncGenerator[HomeAssistant]:
     """HA instance with recorder running, clock frozen at NOW.
 
     ``recorder_mock`` starts the recorder using ``recorder_config`` above.
@@ -113,7 +113,7 @@ async def recorder_hass(
 @pytest.fixture
 async def integration_entry(
     recorder_hass: HomeAssistant,
-) -> AsyncGenerator[tuple[HomeAssistant, None], None]:
+) -> AsyncGenerator[tuple[HomeAssistant, None]]:
     """Load the recorder_tuning integration on top of recorder_hass.
 
     Second tuple element is kept for backward compatibility with tests that
@@ -177,7 +177,7 @@ async def configure_rules(hass: HomeAssistant, rules: list[dict]) -> None:
     through ``RecorderTuningManager.update_config``, which is the same entry
     point the reload service uses.
     """
-    from custom_components.recorder_tuning import CONFIG_SCHEMA  # noqa: PLC0415
+    from custom_components.recorder_tuning import CONFIG_SCHEMA
 
     manager = _get_manager(hass)
     new_domain = {
@@ -200,7 +200,7 @@ def set_stats_keep_days(hass: HomeAssistant, days: int) -> None:
     ``_apply_stats_patch`` refreshes the cached retention value that the
     patched closure reads at purge time.
     """
-    from custom_components.recorder_tuning import _apply_stats_patch  # noqa: PLC0415
+    from custom_components.recorder_tuning import _apply_stats_patch
 
     manager = _get_manager(hass)
     manager.config = {**manager.config, CONF_STATS_KEEP_DAYS: days}

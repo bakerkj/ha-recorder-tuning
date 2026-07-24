@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-
 from custom_components.recorder_tuning.const import (
     CONF_DEVICE_IDS,
     CONF_DEVICE_INTEGRATION_FILTER,
@@ -22,7 +21,6 @@ from custom_components.recorder_tuning.const import (
     MATCH_MODE_ALL,
     MATCH_MODE_ANY,
 )
-
 
 # ---------------------------------------------------------------------------
 # Minimal stubs for HA types

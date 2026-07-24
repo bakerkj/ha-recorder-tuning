@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 
@@ -31,11 +31,11 @@ def _make_hass(stats_keep_days: int = 30):
 
 def test_patch_extends_cutoff():
     """Patch should move the effective cutoff further into the past."""
-    from custom_components.recorder_tuning.const import DOMAIN
     from custom_components.recorder_tuning import (
         _ORIG_PURGE_FN_KEY,
         _apply_stats_patch,
     )
+    from custom_components.recorder_tuning.const import DOMAIN
 
     calls = []
 
@@ -64,7 +64,7 @@ def test_patch_extends_cutoff():
         assert _ORIG_PURGE_FN_KEY in hass.data[DOMAIN]
 
         # Call the patched function with a recent cutoff (e.g. 5-day purge_keep_days)
-        recorder_cutoff = datetime.now(timezone.utc) - timedelta(days=5)
+        recorder_cutoff = datetime.now(UTC) - timedelta(days=5)
         fake_purge_mod.find_short_term_statistics_to_purge(recorder_cutoff, 100)
 
         assert len(calls) == 1
@@ -78,11 +78,12 @@ def test_patch_extends_cutoff():
 
 def test_patch_never_purges_more_aggressively():
     """If stats_keep_days < purge_keep_days, use the recorder's original cutoff."""
+    import sys
+    import types
+
     from custom_components.recorder_tuning import (
         _apply_stats_patch,
     )
-    import sys
-    import types
 
     calls = []
 
@@ -100,7 +101,7 @@ def test_patch_never_purges_more_aggressively():
     _apply_stats_patch(hass, 5)
 
     # Recorder wants to purge everything older than 10 days
-    recorder_cutoff = datetime.now(timezone.utc) - timedelta(days=10)
+    recorder_cutoff = datetime.now(UTC) - timedelta(days=10)
     fake_purge_mod.find_short_term_statistics_to_purge(recorder_cutoff, 100)
 
     assert len(calls) == 1
@@ -108,7 +109,7 @@ def test_patch_never_purges_more_aggressively():
     # stats_cutoff = now - 5d → MORE recent than recorder_cutoff (now-10d)
     # so effective_before = recorder_cutoff (the earlier one)
     effective = calls[0]
-    stats_cutoff = datetime.now(timezone.utc) - timedelta(days=5)
+    stats_cutoff = datetime.now(UTC) - timedelta(days=5)
     assert effective <= stats_cutoff  # never more aggressive than recorder
 
     del sys.modules["homeassistant.components.recorder.purge"]
@@ -121,11 +122,12 @@ def test_patch_never_purges_more_aggressively():
 
 def test_patch_not_applied_twice():
     """Calling _apply_stats_patch a second time should not double-wrap."""
+    import sys
+    import types
+
     from custom_components.recorder_tuning import (
         _apply_stats_patch,
     )
-    import sys
-    import types
 
     call_count = [0]
 
@@ -142,7 +144,7 @@ def test_patch_not_applied_twice():
     # Simulate second call (e.g. options changed)
     _apply_stats_patch(hass, 60)
 
-    recorder_cutoff = datetime.now(timezone.utc) - timedelta(days=3)
+    recorder_cutoff = datetime.now(UTC) - timedelta(days=3)
     fake_purge_mod.find_short_term_statistics_to_purge(recorder_cutoff, 100)
 
     # Original should only be called once per invocation
@@ -234,7 +236,7 @@ def test_reapply_updates_effective_cutoff(monkeypatch):
     wrapper = recorder_purge.find_short_term_statistics_to_purge
 
     # Recorder cutoff is very recent, so our stats cutoff dominates.
-    recorder_cutoff = datetime.now(timezone.utc) - timedelta(days=1)
+    recorder_cutoff = datetime.now(UTC) - timedelta(days=1)
     wrapper(recorder_cutoff, 100)
     first_effective = calls[-1]
 
