@@ -8,11 +8,10 @@ import asyncio
 import fnmatch
 import logging
 import re
-from datetime import datetime, time, timedelta, timezone
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant.config import async_hass_config_yaml
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
@@ -20,12 +19,12 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_DEVICE_IDS,
     CONF_DEVICE_INTEGRATION_FILTER,
     CONF_DRY_RUN,
-    DEFAULT_DRY_RUN,
     CONF_ENABLED,
     CONF_ENTITY_GLOBS,
     CONF_ENTITY_IDS,
@@ -43,6 +42,7 @@ from .const import (
     CONF_RULE_NAMES,
     CONF_RULES,
     CONF_STATS_KEEP_DAYS,
+    DEFAULT_DRY_RUN,
     DEFAULT_HA_RECORDER_PURGE_ENABLED,
     DEFAULT_HA_RECORDER_PURGE_FORCE_REPACK,
     DEFAULT_HA_RECORDER_PURGE_REPACK,
@@ -96,8 +96,17 @@ def _regex_pattern(value: str) -> str:
 
 
 def parse_hhmm(value: str) -> time:
-    """Parse a ``HH:MM`` string into a ``time`` object."""
-    return datetime.strptime(value, "%H:%M").time()
+    """Parse a ``HH:MM`` string into a ``time`` object.
+
+    A wall-clock ``HH:MM`` has no calendar date or timezone, so we build the
+    ``time`` directly from its components rather than going through a naive
+    ``datetime`` (which would only be discarded via ``.time()``). ``time()``
+    itself enforces the 0-23 hour / 0-59 minute ranges.
+    """
+    hour_str, sep, minute_str = value.partition(":")
+    if not sep or not hour_str.isdigit() or not minute_str.isdigit():
+        raise ValueError(f"invalid HH:MM time: {value!r}")
+    return time(int(hour_str), int(minute_str))
 
 
 def _should_repack_today(
@@ -122,7 +131,9 @@ def _should_repack_today(
         return now.weekday() == 6
     if repack_cadence == REPACK_MONTHLY:
         # Reuse HA's own predicate so cadence changes upstream carry over.
-        from homeassistant.components.recorder.util import is_second_sunday  # noqa: PLC0415
+        from homeassistant.components.recorder.util import (
+            is_second_sunday,
+        )
 
         return is_second_sunday(now)
     return False
@@ -372,10 +383,13 @@ async def _query_row_counts(
     """
     # Deferred: homeassistant.components.recorder is not available at module
     # load time — the recorder component must be fully initialised first.
-    from homeassistant.components.recorder import get_instance  # noqa: PLC0415
-    from homeassistant.components.recorder.db_schema import States, StatesMeta  # noqa: PLC0415
-    from homeassistant.helpers.recorder import session_scope  # noqa: PLC0415
-    from sqlalchemy import func, select  # noqa: PLC0415
+    from homeassistant.components.recorder import get_instance
+    from homeassistant.components.recorder.db_schema import (
+        States,
+        StatesMeta,
+    )
+    from homeassistant.helpers.recorder import session_scope
+    from sqlalchemy import func, select
 
     instance = get_instance(hass)
 
@@ -411,7 +425,7 @@ def _apply_stats_patch(hass: HomeAssistant, stats_keep_days: int) -> None:
     ``_STATS_KEEP_DAYS_CURRENT`` variable, so config changes take effect on
     the next recorder purge without rewrapping.
     """
-    global _STATS_KEEP_DAYS_CURRENT  # noqa: PLW0603
+    global _STATS_KEEP_DAYS_CURRENT
     # Update the cached retention unconditionally — covers first-apply,
     # reload, and the "wrapper already installed from a previous run" path.
     _STATS_KEEP_DAYS_CURRENT = stats_keep_days
@@ -419,7 +433,9 @@ def _apply_stats_patch(hass: HomeAssistant, stats_keep_days: int) -> None:
     domain_data = hass.data.setdefault(DOMAIN, {})
 
     try:
-        from homeassistant.components.recorder import purge as recorder_purge  # noqa: PLC0415
+        from homeassistant.components.recorder import (
+            purge as recorder_purge,
+        )
     except ImportError as err:
         _LOGGER.error(
             "recorder.purge unavailable, stats patch not applied: %s",
@@ -451,7 +467,7 @@ def _apply_stats_patch(hass: HomeAssistant, stats_keep_days: int) -> None:
         purge_before: datetime, max_bind_vars: int
     ) -> Any:
         keep_days = _STATS_KEEP_DAYS_CURRENT
-        stats_purge_before = datetime.now(timezone.utc) - timedelta(days=keep_days)
+        stats_purge_before = datetime.now(UTC) - timedelta(days=keep_days)
         # Never purge more aggressively than the recorder wants
         effective_before = min(purge_before, stats_purge_before)
         # WARNING level so it's visible in the default HA log without any
@@ -702,14 +718,14 @@ class RecorderTuningManager:
         _PURGE_DRAIN_TIMEOUT so a wedged recorder doesn't hang the run.
         """
         # Deferred: recorder may not be fully initialised at module load.
-        from homeassistant.components.recorder import get_instance  # noqa: PLC0415
+        from homeassistant.components.recorder import get_instance
 
         try:
             await asyncio.wait_for(
                 get_instance(self.hass).async_block_till_done(),
                 timeout=_PURGE_DRAIN_TIMEOUT,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             _LOGGER.warning(
                 "rule '%s': recorder queue did not drain within %ds — continuing",
                 rule_name,
@@ -857,7 +873,7 @@ class RecorderTuningManager:
         )
         if do_trailing:
             repack = _should_repack_today(
-                datetime.now(),
+                dt_util.now(),
                 ha_purge_cfg.get(
                     CONF_HA_RECORDER_PURGE_REPACK, DEFAULT_HA_RECORDER_PURGE_REPACK
                 ),
@@ -926,7 +942,7 @@ class RecorderTuningManager:
         rule_name = rule[CONF_RULE_NAME]
         keep_days = rule[CONF_KEEP_DAYS]
         prefix = "[DRY RUN]" if dry_run else "[PURGE]"
-        cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
+        cutoff = datetime.now(UTC) - timedelta(days=keep_days)
 
         try:
             results = await _query_row_counts(self.hass, entity_ids, cutoff.timestamp())
@@ -971,7 +987,7 @@ class RecorderTuningManager:
         for line in _rule_config_lines(rule):
             _LOGGER.info("%s   %s", prefix, line)
         for entity_id, (cnt, oldest_ts) in sorted(results.items()):
-            oldest = datetime.fromtimestamp(oldest_ts, tz=timezone.utc)
+            oldest = datetime.fromtimestamp(oldest_ts, tz=UTC)
             _LOGGER.info(
                 "%s   %-60s  %6d rows  %s → %s",
                 prefix,

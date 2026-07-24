@@ -110,37 +110,37 @@ async def test_zero_match_warns_once_then_debug(caplog):
 
     # Patch _resolve_entities to return empty (simulating a rule that matches
     # nothing). Use patch.object so we don't have to go through the registry.
-    with patch.object(manager, "_resolve_entities", return_value=[]):
-        with patch(
+    with (
+        patch.object(manager, "_resolve_entities", return_value=[]),
+        patch(
             "custom_components.recorder_tuning.er.async_get", return_value=MagicMock()
-        ):
-            caplog.set_level(logging.DEBUG)
+        ),
+    ):
+        caplog.set_level(logging.DEBUG)
 
-            await manager._execute_all_rules(service_dry_run=True)
-            # First run → WARNING
-            warnings = [
-                r
-                for r in caplog.records
-                if r.levelname == "WARNING" and "stale" in r.message
-            ]
-            assert len(warnings) == 1
-            assert "stale" in manager._warned_empty_rules
+        await manager._execute_all_rules(service_dry_run=True)
+        # First run → WARNING
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelname == "WARNING" and "stale" in r.message
+        ]
+        assert len(warnings) == 1
+        assert "stale" in manager._warned_empty_rules
 
-            caplog.clear()
-            await manager._execute_all_rules(service_dry_run=True)
-            # Second run → DEBUG only, no more WARNING
-            warnings = [
-                r
-                for r in caplog.records
-                if r.levelname == "WARNING" and "stale" in r.message
-            ]
-            assert warnings == []
-            debugs = [
-                r
-                for r in caplog.records
-                if r.levelname == "DEBUG" and "stale" in r.message
-            ]
-            assert any("still matches no entities" in r.message for r in debugs)
+        caplog.clear()
+        await manager._execute_all_rules(service_dry_run=True)
+        # Second run → DEBUG only, no more WARNING
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelname == "WARNING" and "stale" in r.message
+        ]
+        assert warnings == []
+        debugs = [
+            r for r in caplog.records if r.levelname == "DEBUG" and "stale" in r.message
+        ]
+        assert any("still matches no entities" in r.message for r in debugs)
 
 
 @pytest.mark.asyncio
@@ -162,21 +162,25 @@ async def test_zero_match_suppression_clears_when_rule_recovers():
     manager = _make_manager([rule])
 
     # First: zero match → warn + add to suppressed set.
-    with patch.object(manager, "_resolve_entities", return_value=[]):
-        with patch(
+    with (
+        patch.object(manager, "_resolve_entities", return_value=[]),
+        patch(
             "custom_components.recorder_tuning.er.async_get", return_value=MagicMock()
-        ):
-            await manager._execute_all_rules(service_dry_run=True)
+        ),
+    ):
+        await manager._execute_all_rules(service_dry_run=True)
     assert "recoverable" in manager._warned_empty_rules
 
     # Then: rule matches → discard from suppressed set.
-    with patch.object(manager, "_resolve_entities", return_value=["sensor.x"]):
-        with patch.object(manager, "_log_purge_plan"):
-            with patch(
-                "custom_components.recorder_tuning.er.async_get",
-                return_value=MagicMock(),
-            ):
-                await manager._execute_all_rules(service_dry_run=True)
+    with (
+        patch.object(manager, "_resolve_entities", return_value=["sensor.x"]),
+        patch.object(manager, "_log_purge_plan"),
+        patch(
+            "custom_components.recorder_tuning.er.async_get",
+            return_value=MagicMock(),
+        ),
+    ):
+        await manager._execute_all_rules(service_dry_run=True)
     assert "recoverable" not in manager._warned_empty_rules
 
 
@@ -253,15 +257,17 @@ async def test_top_level_dry_run_locks_even_when_rule_overrides_to_false():
     hass, manager = _make_manager_with_full_config(
         [_make_rule("aggressive_rule", dry_run=False)], top_dry_run=True
     )
-    with patch.object(
-        manager, "_resolve_entities", side_effect=lambda r, reg: r["entity_ids"]
+    with (
+        patch.object(
+            manager, "_resolve_entities", side_effect=lambda r, reg: r["entity_ids"]
+        ),
+        patch.object(manager, "_log_purge_plan", new_callable=AsyncMock),
+        patch(
+            "custom_components.recorder_tuning.er.async_get",
+            return_value=MagicMock(),
+        ),
     ):
-        with patch.object(manager, "_log_purge_plan", new_callable=AsyncMock):
-            with patch(
-                "custom_components.recorder_tuning.er.async_get",
-                return_value=MagicMock(),
-            ):
-                await manager._execute_all_rules()
+        await manager._execute_all_rules()
 
     assert not [
         c
@@ -276,15 +282,17 @@ async def test_service_dry_run_true_forces_dry_even_when_rule_says_false():
     hass, manager = _make_manager_with_full_config(
         [_make_rule("rule_a", dry_run=False)]
     )
-    with patch.object(
-        manager, "_resolve_entities", side_effect=lambda r, reg: r["entity_ids"]
+    with (
+        patch.object(
+            manager, "_resolve_entities", side_effect=lambda r, reg: r["entity_ids"]
+        ),
+        patch.object(manager, "_log_purge_plan", new_callable=AsyncMock),
+        patch(
+            "custom_components.recorder_tuning.er.async_get",
+            return_value=MagicMock(),
+        ),
     ):
-        with patch.object(manager, "_log_purge_plan", new_callable=AsyncMock):
-            with patch(
-                "custom_components.recorder_tuning.er.async_get",
-                return_value=MagicMock(),
-            ):
-                await manager._execute_all_rules(service_dry_run=True)
+        await manager._execute_all_rules(service_dry_run=True)
 
     assert not [
         c
@@ -297,15 +305,17 @@ async def test_service_dry_run_true_forces_dry_even_when_rule_says_false():
 async def test_service_dry_run_false_forces_live_even_when_rule_says_true():
     """Service dry_run=false beats per-rule dry_run=true (top-level is false)."""
     hass, manager = _make_manager_with_full_config([_make_rule("rule_a", dry_run=True)])
-    with patch.object(
-        manager, "_resolve_entities", side_effect=lambda r, reg: r["entity_ids"]
+    with (
+        patch.object(
+            manager, "_resolve_entities", side_effect=lambda r, reg: r["entity_ids"]
+        ),
+        patch.object(manager, "_log_purge_plan", new_callable=AsyncMock),
+        patch(
+            "custom_components.recorder_tuning.er.async_get",
+            return_value=MagicMock(),
+        ),
     ):
-        with patch.object(manager, "_log_purge_plan", new_callable=AsyncMock):
-            with patch(
-                "custom_components.recorder_tuning.er.async_get",
-                return_value=MagicMock(),
-            ):
-                await manager._execute_all_rules(service_dry_run=False)
+        await manager._execute_all_rules(service_dry_run=False)
 
     purge_calls = [
         c
@@ -324,18 +334,20 @@ async def test_mixed_mode_log_when_rules_disagree(caplog):
         _make_rule("dry_rule", dry_run=True),
         _make_rule("live_rule", dry_run=False),
     ]
-    hass, manager = _make_manager_with_full_config(rules)
+    _hass, manager = _make_manager_with_full_config(rules)
     caplog.set_level(logging.INFO)
 
-    with patch.object(
-        manager, "_resolve_entities", side_effect=lambda r, reg: r["entity_ids"]
+    with (
+        patch.object(
+            manager, "_resolve_entities", side_effect=lambda r, reg: r["entity_ids"]
+        ),
+        patch.object(manager, "_log_purge_plan", new_callable=AsyncMock),
+        patch(
+            "custom_components.recorder_tuning.er.async_get",
+            return_value=MagicMock(),
+        ),
     ):
-        with patch.object(manager, "_log_purge_plan", new_callable=AsyncMock):
-            with patch(
-                "custom_components.recorder_tuning.er.async_get",
-                return_value=MagicMock(),
-            ):
-                await manager._execute_all_rules()
+        await manager._execute_all_rules()
 
     msgs = [r.message for r in caplog.records]
     assert any(
@@ -756,37 +768,37 @@ async def test_recorder_purge_passes_repack_option():
 
 def test_should_repack_force_wins_over_cadence():
     """force_repack=true must repack every day regardless of repack cadence."""
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     from custom_components.recorder_tuning import _should_repack_today
 
-    weekday = datetime(2026, 4, 15)  # Wednesday — no "natural" repack day
+    weekday = datetime(2026, 4, 15, tzinfo=UTC)  # Wednesday — no "natural" repack day
     assert _should_repack_today(weekday, "never", force_repack=True) is True
     assert _should_repack_today(weekday, "monthly", force_repack=True) is True
     assert _should_repack_today(weekday, "weekly", force_repack=True) is True
 
 
 def test_should_repack_never_is_always_false_without_force():
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     from custom_components.recorder_tuning import _should_repack_today
 
     for day in (
-        datetime(2026, 4, 5),  # 1st Sunday
-        datetime(2026, 4, 12),  # 2nd Sunday
-        datetime(2026, 4, 15),  # Wednesday
+        datetime(2026, 4, 5, tzinfo=UTC),  # 1st Sunday
+        datetime(2026, 4, 12, tzinfo=UTC),  # 2nd Sunday
+        datetime(2026, 4, 15, tzinfo=UTC),  # Wednesday
     ):
         assert _should_repack_today(day, "never", force_repack=False) is False
 
 
 def test_should_repack_weekly_fires_only_on_sundays():
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     from custom_components.recorder_tuning import _should_repack_today
 
-    sunday = datetime(2026, 4, 12)
-    monday = datetime(2026, 4, 13)
-    saturday = datetime(2026, 4, 11)
+    sunday = datetime(2026, 4, 12, tzinfo=UTC)
+    monday = datetime(2026, 4, 13, tzinfo=UTC)
+    saturday = datetime(2026, 4, 11, tzinfo=UTC)
 
     assert _should_repack_today(sunday, "weekly", force_repack=False) is True
     assert _should_repack_today(monday, "weekly", force_repack=False) is False
@@ -794,26 +806,30 @@ def test_should_repack_weekly_fires_only_on_sundays():
 
 
 def test_should_repack_monthly_fires_on_second_sunday_only():
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     from custom_components.recorder_tuning import _should_repack_today
 
     # April 2026: 1st Sun=5, 2nd Sun=12, 3rd Sun=19, 4th Sun=26
-    assert _should_repack_today(datetime(2026, 4, 5), "monthly", False) is False
-    assert _should_repack_today(datetime(2026, 4, 12), "monthly", False) is True
-    assert _should_repack_today(datetime(2026, 4, 19), "monthly", False) is False
-    assert _should_repack_today(datetime(2026, 4, 26), "monthly", False) is False
+    def dt(day: int) -> datetime:
+        return datetime(2026, 4, day, tzinfo=UTC)
+
+    assert _should_repack_today(dt(5), "monthly", False) is False
+    assert _should_repack_today(dt(12), "monthly", False) is True
+    assert _should_repack_today(dt(19), "monthly", False) is False
+    assert _should_repack_today(dt(26), "monthly", False) is False
     # Not even a Sunday
-    assert _should_repack_today(datetime(2026, 4, 15), "monthly", False) is False
+    assert _should_repack_today(dt(15), "monthly", False) is False
 
 
 @pytest.mark.asyncio
 async def test_recorder_purge_cadence_on_matching_day_sends_repack_true(freezer):
     """weekly cadence on a Sunday must pass repack=True to recorder.purge."""
+    from datetime import UTC
     from datetime import datetime as real_datetime
 
     hass, manager = _make_manager_with_config(repack="weekly", force_repack=False)
-    freezer.move_to(real_datetime(2026, 4, 12))  # Sunday
+    freezer.move_to(real_datetime(2026, 4, 12, tzinfo=UTC))  # Sunday
 
     with patch(
         "custom_components.recorder_tuning.er.async_get", return_value=MagicMock()
@@ -832,10 +848,11 @@ async def test_recorder_purge_cadence_on_matching_day_sends_repack_true(freezer)
 @pytest.mark.asyncio
 async def test_recorder_purge_cadence_off_day_sends_repack_false(freezer):
     """weekly cadence on a non-Sunday must pass repack=False."""
+    from datetime import UTC
     from datetime import datetime as real_datetime
 
     hass, manager = _make_manager_with_config(repack="weekly", force_repack=False)
-    freezer.move_to(real_datetime(2026, 4, 15))  # Wednesday
+    freezer.move_to(real_datetime(2026, 4, 15, tzinfo=UTC))  # Wednesday
 
     with patch(
         "custom_components.recorder_tuning.er.async_get", return_value=MagicMock()
@@ -915,15 +932,19 @@ async def test_run_purge_now_rule_names_filters_rules():
     call = MagicMock()
     call.data = {"rule_names": ["rule_a", "rule_c"]}
 
-    with patch.object(
-        manager, "_resolve_entities", side_effect=lambda rule, reg: rule["entity_ids"]
+    with (
+        patch.object(
+            manager,
+            "_resolve_entities",
+            side_effect=lambda rule, reg: rule["entity_ids"],
+        ),
+        patch.object(manager, "_log_purge_plan", new_callable=AsyncMock),
+        patch(
+            "custom_components.recorder_tuning.er.async_get",
+            return_value=MagicMock(),
+        ),
     ):
-        with patch.object(manager, "_log_purge_plan", new_callable=AsyncMock):
-            with patch(
-                "custom_components.recorder_tuning.er.async_get",
-                return_value=MagicMock(),
-            ):
-                await manager.async_run_purge_now(call)
+        await manager.async_run_purge_now(call)
 
     purge_entity_calls = [
         c
@@ -950,15 +971,19 @@ async def test_run_purge_now_rule_names_match_is_case_insensitive():
     # Mixed casing: one all-lower, one all-upper
     call.data = {"rule_names": ["frigate camera metrics", "ESPHOME DIAGNOSTIC SENSORS"]}
 
-    with patch.object(
-        manager, "_resolve_entities", side_effect=lambda rule, reg: rule["entity_ids"]
+    with (
+        patch.object(
+            manager,
+            "_resolve_entities",
+            side_effect=lambda rule, reg: rule["entity_ids"],
+        ),
+        patch.object(manager, "_log_purge_plan", new_callable=AsyncMock),
+        patch(
+            "custom_components.recorder_tuning.er.async_get",
+            return_value=MagicMock(),
+        ),
     ):
-        with patch.object(manager, "_log_purge_plan", new_callable=AsyncMock):
-            with patch(
-                "custom_components.recorder_tuning.er.async_get",
-                return_value=MagicMock(),
-            ):
-                await manager.async_run_purge_now(call)
+        await manager.async_run_purge_now(call)
 
     purge_entity_calls = [
         c
@@ -972,7 +997,7 @@ async def test_run_purge_now_rule_names_match_is_case_insensitive():
 @pytest.mark.asyncio
 async def test_run_purge_now_keep_days_override_applied_to_rule():
     """keep_days service param overrides the rule's configured keep_days."""
-    hass, manager = _make_manager_with_rules(
+    _hass, manager = _make_manager_with_rules(
         [{"name": "rule_a", "entity_ids": ["sensor.a"], "keep_days": 14}]
     )
 
@@ -984,15 +1009,19 @@ async def test_run_purge_now_keep_days_override_applied_to_rule():
     async def fake_log_plan(rule, entity_ids, dry_run=False):
         seen_keep_days.append(rule["keep_days"])
 
-    with patch.object(
-        manager, "_resolve_entities", side_effect=lambda rule, reg: rule["entity_ids"]
+    with (
+        patch.object(
+            manager,
+            "_resolve_entities",
+            side_effect=lambda rule, reg: rule["entity_ids"],
+        ),
+        patch.object(manager, "_log_purge_plan", side_effect=fake_log_plan),
+        patch(
+            "custom_components.recorder_tuning.er.async_get",
+            return_value=MagicMock(),
+        ),
     ):
-        with patch.object(manager, "_log_purge_plan", side_effect=fake_log_plan):
-            with patch(
-                "custom_components.recorder_tuning.er.async_get",
-                return_value=MagicMock(),
-            ):
-                await manager.async_run_purge_now(call)
+        await manager.async_run_purge_now(call)
 
     assert seen_keep_days == [1]
     # Verify the service-call didn't mutate the manager's rules in place
@@ -1002,7 +1031,7 @@ async def test_run_purge_now_keep_days_override_applied_to_rule():
 @pytest.mark.asyncio
 async def test_run_purge_now_keep_days_override_applies_to_all_rules_when_no_filter():
     """Without rule_names, the override applies to every rule in the run."""
-    hass, manager = _make_manager_with_rules(
+    _hass, manager = _make_manager_with_rules(
         [
             {"name": "rule_a", "entity_ids": ["sensor.a"], "keep_days": 14},
             {"name": "rule_b", "entity_ids": ["sensor.b"], "keep_days": 30},
@@ -1017,15 +1046,19 @@ async def test_run_purge_now_keep_days_override_applies_to_all_rules_when_no_fil
     async def fake_log_plan(rule, entity_ids, dry_run=False):
         seen_keep_days.append(rule["keep_days"])
 
-    with patch.object(
-        manager, "_resolve_entities", side_effect=lambda rule, reg: rule["entity_ids"]
+    with (
+        patch.object(
+            manager,
+            "_resolve_entities",
+            side_effect=lambda rule, reg: rule["entity_ids"],
+        ),
+        patch.object(manager, "_log_purge_plan", side_effect=fake_log_plan),
+        patch(
+            "custom_components.recorder_tuning.er.async_get",
+            return_value=MagicMock(),
+        ),
     ):
-        with patch.object(manager, "_log_purge_plan", side_effect=fake_log_plan):
-            with patch(
-                "custom_components.recorder_tuning.er.async_get",
-                return_value=MagicMock(),
-            ):
-                await manager.async_run_purge_now(call)
+        await manager.async_run_purge_now(call)
 
     assert seen_keep_days == [3, 3]
     # Both original rules still have their configured keep_days
@@ -1043,15 +1076,19 @@ async def test_run_purge_now_rule_names_skips_trailing_global_purge():
     call = MagicMock()
     call.data = {"rule_names": ["rule_a"]}
 
-    with patch.object(
-        manager, "_resolve_entities", side_effect=lambda rule, reg: rule["entity_ids"]
+    with (
+        patch.object(
+            manager,
+            "_resolve_entities",
+            side_effect=lambda rule, reg: rule["entity_ids"],
+        ),
+        patch.object(manager, "_log_purge_plan", new_callable=AsyncMock),
+        patch(
+            "custom_components.recorder_tuning.er.async_get",
+            return_value=MagicMock(),
+        ),
     ):
-        with patch.object(manager, "_log_purge_plan", new_callable=AsyncMock):
-            with patch(
-                "custom_components.recorder_tuning.er.async_get",
-                return_value=MagicMock(),
-            ):
-                await manager.async_run_purge_now(call)
+        await manager.async_run_purge_now(call)
 
     purge_calls = [
         c
@@ -1071,15 +1108,19 @@ async def test_run_purge_now_default_skips_trailing_purge():
     call = MagicMock()
     call.data = {}
 
-    with patch.object(
-        manager, "_resolve_entities", side_effect=lambda rule, reg: rule["entity_ids"]
+    with (
+        patch.object(
+            manager,
+            "_resolve_entities",
+            side_effect=lambda rule, reg: rule["entity_ids"],
+        ),
+        patch.object(manager, "_log_purge_plan", new_callable=AsyncMock),
+        patch(
+            "custom_components.recorder_tuning.er.async_get",
+            return_value=MagicMock(),
+        ),
     ):
-        with patch.object(manager, "_log_purge_plan", new_callable=AsyncMock):
-            with patch(
-                "custom_components.recorder_tuning.er.async_get",
-                return_value=MagicMock(),
-            ):
-                await manager.async_run_purge_now(call)
+        await manager.async_run_purge_now(call)
 
     purge_calls = [
         c
@@ -1099,15 +1140,19 @@ async def test_run_purge_now_explicit_opt_in_runs_trailing_purge():
     call = MagicMock()
     call.data = {"ha_recorder_purge": True}
 
-    with patch.object(
-        manager, "_resolve_entities", side_effect=lambda rule, reg: rule["entity_ids"]
+    with (
+        patch.object(
+            manager,
+            "_resolve_entities",
+            side_effect=lambda rule, reg: rule["entity_ids"],
+        ),
+        patch.object(manager, "_log_purge_plan", new_callable=AsyncMock),
+        patch(
+            "custom_components.recorder_tuning.er.async_get",
+            return_value=MagicMock(),
+        ),
     ):
-        with patch.object(manager, "_log_purge_plan", new_callable=AsyncMock):
-            with patch(
-                "custom_components.recorder_tuning.er.async_get",
-                return_value=MagicMock(),
-            ):
-                await manager.async_run_purge_now(call)
+        await manager.async_run_purge_now(call)
 
     purge_calls = [
         c
@@ -1127,15 +1172,19 @@ async def test_run_purge_now_rule_names_overrides_explicit_opt_in():
     call = MagicMock()
     call.data = {"rule_names": ["rule_a"], "ha_recorder_purge": True}
 
-    with patch.object(
-        manager, "_resolve_entities", side_effect=lambda rule, reg: rule["entity_ids"]
+    with (
+        patch.object(
+            manager,
+            "_resolve_entities",
+            side_effect=lambda rule, reg: rule["entity_ids"],
+        ),
+        patch.object(manager, "_log_purge_plan", new_callable=AsyncMock),
+        patch(
+            "custom_components.recorder_tuning.er.async_get",
+            return_value=MagicMock(),
+        ),
     ):
-        with patch.object(manager, "_log_purge_plan", new_callable=AsyncMock):
-            with patch(
-                "custom_components.recorder_tuning.er.async_get",
-                return_value=MagicMock(),
-            ):
-                await manager.async_run_purge_now(call)
+        await manager.async_run_purge_now(call)
 
     purge_calls = [
         c
@@ -1152,18 +1201,22 @@ async def test_scheduled_run_still_triggers_trailing_purge():
         [{"name": "rule_a", "entity_ids": ["sensor.a"]}]
     )
 
-    with patch.object(
-        manager, "_resolve_entities", side_effect=lambda rule, reg: rule["entity_ids"]
+    with (
+        patch.object(
+            manager,
+            "_resolve_entities",
+            side_effect=lambda rule, reg: rule["entity_ids"],
+        ),
+        patch.object(manager, "_log_purge_plan", new_callable=AsyncMock),
+        patch(
+            "custom_components.recorder_tuning.er.async_get",
+            return_value=MagicMock(),
+        ),
     ):
-        with patch.object(manager, "_log_purge_plan", new_callable=AsyncMock):
-            with patch(
-                "custom_components.recorder_tuning.er.async_get",
-                return_value=MagicMock(),
-            ):
-                # Simulate the scheduled firing path — _async_run_purge.
-                from datetime import datetime
+        # Simulate the scheduled firing path — _async_run_purge.
+        from datetime import UTC, datetime
 
-                await manager._async_run_purge(datetime.now())
+        await manager._async_run_purge(datetime.now(UTC))
 
     purge_calls = [
         c
@@ -1189,15 +1242,19 @@ async def test_run_purge_now_unknown_rule_names_warn_not_abort(caplog):
     call.data = {"rule_names": ["rule_a", "typo_rule"]}
     caplog.set_level(logging.WARNING)
 
-    with patch.object(
-        manager, "_resolve_entities", side_effect=lambda rule, reg: rule["entity_ids"]
+    with (
+        patch.object(
+            manager,
+            "_resolve_entities",
+            side_effect=lambda rule, reg: rule["entity_ids"],
+        ),
+        patch.object(manager, "_log_purge_plan", new_callable=AsyncMock),
+        patch(
+            "custom_components.recorder_tuning.er.async_get",
+            return_value=MagicMock(),
+        ),
     ):
-        with patch.object(manager, "_log_purge_plan", new_callable=AsyncMock):
-            with patch(
-                "custom_components.recorder_tuning.er.async_get",
-                return_value=MagicMock(),
-            ):
-                await manager.async_run_purge_now(call)
+        await manager.async_run_purge_now(call)
 
     assert any("unknown rule name" in r.message for r in caplog.records)
 

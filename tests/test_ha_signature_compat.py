@@ -25,12 +25,11 @@ from __future__ import annotations
 
 import inspect
 
-
 EXPECTED_PARAMS: tuple[str, ...] = ("purge_before", "max_bind_vars")
 
 
 def test_find_short_term_statistics_to_purge_exists() -> None:
-    from homeassistant.components.recorder import purge  # noqa: PLC0415
+    from homeassistant.components.recorder import purge
 
     assert hasattr(purge, "find_short_term_statistics_to_purge"), (
         "homeassistant.components.recorder.purge.find_short_term_statistics_to_purge "
@@ -40,7 +39,7 @@ def test_find_short_term_statistics_to_purge_exists() -> None:
 
 
 def test_find_short_term_statistics_to_purge_signature() -> None:
-    from homeassistant.components.recorder import purge  # noqa: PLC0415
+    from homeassistant.components.recorder import purge
 
     sig = inspect.signature(purge.find_short_term_statistics_to_purge)
     params = tuple(sig.parameters)

@@ -189,8 +189,10 @@ async def test_device_id_purges_all_device_entities(
     hass, _ = integration_entry
     ent_reg = er.async_get(hass)
 
-    from homeassistant.helpers import device_registry as dr  # noqa: PLC0415
-    from pytest_homeassistant_custom_component.common import MockConfigEntry  # noqa: PLC0415
+    from homeassistant.helpers import device_registry as dr
+    from pytest_homeassistant_custom_component.common import (
+        MockConfigEntry,
+    )
 
     # Device registry requires a real config entry
     device_entry = MockConfigEntry(domain="test_device_platform")
