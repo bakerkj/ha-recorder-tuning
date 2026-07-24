@@ -1,5 +1,100 @@
 # Changelog
 
+## [0.0.13](https://github.com/bakerkj/ha-recorder-tuning/compare/v0.0.12...v0.0.13) (2026-07-24)
+
+
+### Miscellaneous Chores
+
+* cover all dependencies with renovate ([922afe1](https://github.com/bakerkj/ha-recorder-tuning/commit/922afe1f1f2577dd94b52988899e01fd437a0400))
+* cover all dependencies with renovate ([2b38ae2](https://github.com/bakerkj/ha-recorder-tuning/commit/2b38ae2ade6607f0f304eb282232c4e377f7c098))
+* **deps:** pin dependencies ([206dea9](https://github.com/bakerkj/ha-recorder-tuning/commit/206dea9e9c64360ce1faf94cc8952f554bcab8da))
+* **deps:** pin dependencies ([80d86df](https://github.com/bakerkj/ha-recorder-tuning/commit/80d86df50ee7aa489a0f5582980f3a3022edf947))
+* **deps:** update actions/setup-python action to v7 ([#83](https://github.com/bakerkj/ha-recorder-tuning/issues/83)) ([40fdff9](https://github.com/bakerkj/ha-recorder-tuning/commit/40fdff9332c303b882c47ddc44797065e25d198f))
+* **deps:** update anthropics/claude-code-action action to v1.0.165 ([77042b9](https://github.com/bakerkj/ha-recorder-tuning/commit/77042b96b067af74d4cc5b5bf5133fe12725021f))
+* **deps:** update anthropics/claude-code-action action to v1.0.165 ([fcf9a8c](https://github.com/bakerkj/ha-recorder-tuning/commit/fcf9a8c99c770658173780ad8793a31df6dcdde0))
+* **deps:** update anthropics/claude-code-action action to v1.0.176 ([#80](https://github.com/bakerkj/ha-recorder-tuning/issues/80)) ([b6223af](https://github.com/bakerkj/ha-recorder-tuning/commit/b6223afd82897c9286f7f72e3dc872f5a64ca12b))
+* **deps:** update anthropics/claude-code-action action to v1.0.181 ([#90](https://github.com/bakerkj/ha-recorder-tuning/issues/90)) ([43a6079](https://github.com/bakerkj/ha-recorder-tuning/commit/43a60791680056fe12ec2db60cd38856f8bf0943))
+* **deps:** update astral-sh/setup-uv action to v8.3.0 ([#75](https://github.com/bakerkj/ha-recorder-tuning/issues/75)) ([ec5fdcc](https://github.com/bakerkj/ha-recorder-tuning/commit/ec5fdcc77d9e77bc58f601038c2aaf9bd20aacde))
+* **deps:** update astral-sh/setup-uv action to v9 ([#86](https://github.com/bakerkj/ha-recorder-tuning/issues/86)) ([b9c53c2](https://github.com/bakerkj/ha-recorder-tuning/commit/b9c53c239d4f7f09f61d8992194475e0ac5181ca))
+* **deps:** update commitlint monorepo to v21 ([09ec2ee](https://github.com/bakerkj/ha-recorder-tuning/commit/09ec2ee3e77315590f7697e159573debef691630))
+* **deps:** update commitlint monorepo to v21 ([37d4a28](https://github.com/bakerkj/ha-recorder-tuning/commit/37d4a283c9256a9fdd0d12c4edfbe696734bff11))
+* **deps:** update github-actions ([afe3d8c](https://github.com/bakerkj/ha-recorder-tuning/commit/afe3d8c7ea480250f877b4b870ccafd895409aae))
+* **deps:** update github-actions ([dc5d9f3](https://github.com/bakerkj/ha-recorder-tuning/commit/dc5d9f30ebd576cf00199e4643dea605c401e7b2))
+* **deps:** update github-actions ([695a4eb](https://github.com/bakerkj/ha-recorder-tuning/commit/695a4ebb6613e43bf4e8a5ed4a283dab3892f314))
+* **deps:** update github-actions ([474d8ad](https://github.com/bakerkj/ha-recorder-tuning/commit/474d8ad80b7a3b68959ab3f36b2edec91987d8ef))
+* **deps:** update github-actions ([d23ebab](https://github.com/bakerkj/ha-recorder-tuning/commit/d23ebab5840d205614f64bb85422d164f488223d))
+* **deps:** update github-actions ([c182f5a](https://github.com/bakerkj/ha-recorder-tuning/commit/c182f5a32a1b83de1d363e24e84b3b735fa92ec1))
+* **deps:** update github-actions ([3a60891](https://github.com/bakerkj/ha-recorder-tuning/commit/3a60891b72fda3d45df32c68b53d31c1cc420373))
+* **deps:** update github-actions ([9b0ebc7](https://github.com/bakerkj/ha-recorder-tuning/commit/9b0ebc7abc476e34ce43a52ae7178aded76b9547))
+* **deps:** update github-actions ([96e4149](https://github.com/bakerkj/ha-recorder-tuning/commit/96e41490a8c6046bc285db2e6a9093bd96d22e69))
+* **deps:** update github-actions ([3d7e4c3](https://github.com/bakerkj/ha-recorder-tuning/commit/3d7e4c33873eb3553f5132a9b3ca6aaf91ab280c))
+* **deps:** update github-actions ([5df1213](https://github.com/bakerkj/ha-recorder-tuning/commit/5df121316a8f5d1c5f957be485b4c245d71ff86f))
+* **deps:** update github-actions ([#77](https://github.com/bakerkj/ha-recorder-tuning/issues/77)) ([e5224e1](https://github.com/bakerkj/ha-recorder-tuning/commit/e5224e1bfe56c23b0ba4d29b97b2f2ae47ec2e95))
+* **deps:** update github-actions ([#82](https://github.com/bakerkj/ha-recorder-tuning/issues/82)) ([0ed1f64](https://github.com/bakerkj/ha-recorder-tuning/commit/0ed1f64d979f2b29f97ab3a5ebbbae49a34e69df))
+* **deps:** update github-actions ([#84](https://github.com/bakerkj/ha-recorder-tuning/issues/84)) ([96f2a72](https://github.com/bakerkj/ha-recorder-tuning/commit/96f2a721e12be3f11e188c2f8fe058cc6792bc2e))
+* **deps:** update github-actions (major) ([b40292c](https://github.com/bakerkj/ha-recorder-tuning/commit/b40292c0805500feb84f08d7ac4a6316a323426e))
+* **deps:** update github-actions to v1.0.153 ([3357250](https://github.com/bakerkj/ha-recorder-tuning/commit/335725075cfd2063b59d0589154df00fccc3cfe1))
+* **deps:** update github-actions to v1.0.153 ([f62ef5c](https://github.com/bakerkj/ha-recorder-tuning/commit/f62ef5c1dfb4536a4779e35349b6f22b0a606f91))
+* **deps:** update github-actions to v7 ([b048269](https://github.com/bakerkj/ha-recorder-tuning/commit/b0482694361d48c6b33b616acd16892a025c4f66))
+* **deps:** update github-actions to v7 ([052e35e](https://github.com/bakerkj/ha-recorder-tuning/commit/052e35e35845a261b29bab5d2c2b3d301b0de0cb))
+* **deps:** update pre-commit hook alessandrojcm/commitlint-pre-commit-hook to v9.26.0 ([8f12b6c](https://github.com/bakerkj/ha-recorder-tuning/commit/8f12b6c1b0d77b7bd3a19774ed895f3a384ad3fa))
+* **deps:** update pre-commit hook alessandrojcm/commitlint-pre-commit-hook to v9.26.0 ([fd090b3](https://github.com/bakerkj/ha-recorder-tuning/commit/fd090b3921468a1a551851b8fdc23780eda850fa))
+* **deps:** update pre-commit hook astral-sh/ruff-pre-commit to v0.15.15 ([22a2e92](https://github.com/bakerkj/ha-recorder-tuning/commit/22a2e920ca52b4a2596945c840db380c55a2ca99))
+* **deps:** update pre-commit hook astral-sh/ruff-pre-commit to v0.15.20 ([9b81e33](https://github.com/bakerkj/ha-recorder-tuning/commit/9b81e330f2e2efeb987d90f8e3e496146819cd9b))
+* **deps:** update pre-commit hook astral-sh/ruff-pre-commit to v0.16.0 ([#88](https://github.com/bakerkj/ha-recorder-tuning/issues/88)) ([3281af2](https://github.com/bakerkj/ha-recorder-tuning/commit/3281af2bd3b2818ead78eeacf068ddc3d7be4cfa))
+* **deps:** update pre-commit hook rbubley/mirrors-prettier to v3.9.4 ([c2f6442](https://github.com/bakerkj/ha-recorder-tuning/commit/c2f6442c6867717172a58afe87aa5afcabe3da34))
+* **deps:** update pre-commit hook rbubley/mirrors-prettier to v3.9.4 ([f832209](https://github.com/bakerkj/ha-recorder-tuning/commit/f832209c66bd48ea6da16b18bb22ebd0896e1fe7))
+* **deps:** update pre-commit hook rbubley/mirrors-prettier to v3.9.6 ([#87](https://github.com/bakerkj/ha-recorder-tuning/issues/87)) ([e5b7945](https://github.com/bakerkj/ha-recorder-tuning/commit/e5b7945ae161076eb8d08e88f0c7f6302efb83de))
+* **deps:** update pre-commit hooks ([6161e58](https://github.com/bakerkj/ha-recorder-tuning/commit/6161e58bff58a86129237a8baae6e2a7efd50fc9))
+* **deps:** update pre-commit hooks ([fd26d3e](https://github.com/bakerkj/ha-recorder-tuning/commit/fd26d3ee1ef5b75f31e8205b83254f38adcfafd5))
+* **deps:** update pre-commit hooks ([095f4e4](https://github.com/bakerkj/ha-recorder-tuning/commit/095f4e452e5872935fb047d7c305c7f5275033ae))
+* **deps:** update pre-commit hooks ([50679b9](https://github.com/bakerkj/ha-recorder-tuning/commit/50679b9de471bc9ea475f78dca9e7c653d4803f0))
+* **deps:** update pre-commit hooks ([16564b6](https://github.com/bakerkj/ha-recorder-tuning/commit/16564b66585c413215fd9d6f20fb594a4b72b76a))
+* **deps:** update pre-commit hooks ([e4dbaa6](https://github.com/bakerkj/ha-recorder-tuning/commit/e4dbaa6de5d8828578be64ab2f497151070890ed))
+* **deps:** update pre-commit hooks ([#79](https://github.com/bakerkj/ha-recorder-tuning/issues/79)) ([9ac9e47](https://github.com/bakerkj/ha-recorder-tuning/commit/9ac9e47cd4d34c172b7e7e639ffa1e757fa8bd71))
+* **deps:** update pre-commit hooks ([#81](https://github.com/bakerkj/ha-recorder-tuning/issues/81)) ([8fa291c](https://github.com/bakerkj/ha-recorder-tuning/commit/8fa291ce673e8c2d3d2ea573310e62e7c39c57fa))
+* **deps:** update pre-commit hooks to v0.15.16 ([89e0493](https://github.com/bakerkj/ha-recorder-tuning/commit/89e0493f87dc595b962d045febf1507bf3eb713d))
+* **deps:** update pre-commit hooks to v0.15.16 ([50f374c](https://github.com/bakerkj/ha-recorder-tuning/commit/50f374c961783ec9d1081ea83c52d5bb608d055c))
+* **deps:** update pre-commit hooks to v0.15.18 ([4441c67](https://github.com/bakerkj/ha-recorder-tuning/commit/4441c67240b2d23b42f8ba45f7f69b2857dd0261))
+* **deps:** update pre-commit hooks to v0.15.18 ([c6a6e89](https://github.com/bakerkj/ha-recorder-tuning/commit/c6a6e89b425a2472f757bcb6f8cc75b8ae52424a))
+* **deps:** update pre-commit hooks to v3.8.4 ([a6b1f0a](https://github.com/bakerkj/ha-recorder-tuning/commit/a6b1f0a8f8f67dd0f970bae5f00ebc52c3c24547))
+* **deps:** update pre-commit hooks to v3.8.4 ([45549a4](https://github.com/bakerkj/ha-recorder-tuning/commit/45549a441c8331fa90aff2f47dafd1d65e31e292))
+* normalize workflow file extensions to .yaml ([b4efb16](https://github.com/bakerkj/ha-recorder-tuning/commit/b4efb164691084dd91f3b36eab7191d2c3f06476))
+* normalize workflow file extensions to .yaml ([3297e76](https://github.com/bakerkj/ha-recorder-tuning/commit/3297e76469a65b745a2fc0088394a27e0e786e0a))
+* pin GitHub Actions to triple-digit tags ([0250c42](https://github.com/bakerkj/ha-recorder-tuning/commit/0250c42562bfdc63ea039d49920d34990075bc49))
+* pin GitHub Actions to triple-digit tags ([428942d](https://github.com/bakerkj/ha-recorder-tuning/commit/428942d2b68180888e66e4ac3397248b0b2765e5))
+* pin uv to ==0.11.* and let Renovate track it ([5f76eea](https://github.com/bakerkj/ha-recorder-tuning/commit/5f76eea4f5983d95747990ae35b5267907a82d94))
+* pin uv to ==0.11.* and let Renovate track it ([f0cc947](https://github.com/bakerkj/ha-recorder-tuning/commit/f0cc947ec8a40bc8af1b49488fcc5aa91988629c))
+* **renovate:** drop redundant alternation in npm-in-pre-commit regex ([#85](https://github.com/bakerkj/ha-recorder-tuning/issues/85)) ([867fc6e](https://github.com/bakerkj/ha-recorder-tuning/commit/867fc6ec283b92097bca36595b6a499d18847b64))
+* **renovate:** pin GitHub Action digests to semver ([7cd19e6](https://github.com/bakerkj/ha-recorder-tuning/commit/7cd19e6ec24f22bf75b39dbd1079347fdd56bfc5))
+* **renovate:** pin GitHub Action digests to semver ([7837609](https://github.com/bakerkj/ha-recorder-tuning/commit/7837609ef1d14c295d68738c959920ee504bb699))
+
+
+### Documentation
+
+* add MIT license ([#76](https://github.com/bakerkj/ha-recorder-tuning/issues/76)) ([e60497b](https://github.com/bakerkj/ha-recorder-tuning/commit/e60497bfdcfae144ca162d751453a418f34cf7f1))
+
+
+### Tests
+
+* guard disable_http_server fixture for HA dev ([#78](https://github.com/bakerkj/ha-recorder-tuning/issues/78)) ([4896203](https://github.com/bakerkj/ha-recorder-tuning/commit/489620382a7a5abbda7a93ad824682f7585e35c2))
+
+
+### Continuous Integration
+
+* **claude:** add [@claude](https://github.com/claude) responder workflow ([6ea68fd](https://github.com/bakerkj/ha-recorder-tuning/commit/6ea68fd535efaa8a6fe9d26248dbaecb162fec9e))
+* **claude:** add auto code-review workflow ([2b5eb93](https://github.com/bakerkj/ha-recorder-tuning/commit/2b5eb93f7e5ec9593b72ef0239875a153788e2ff))
+* **claude:** add Claude Code GitHub workflows ([21ea2d0](https://github.com/bakerkj/ha-recorder-tuning/commit/21ea2d08894e2992ef89e7405d73ce7c435b177b))
+* **claude:** call out short-term statistics + data migration as priority surfaces ([e64677e](https://github.com/bakerkj/ha-recorder-tuning/commit/e64677e0a08e7e3003ed1240e00a173b7315d103))
+* **claude:** move statistics + migration callout under HA integration correctness as sub-bullets ([f23d0e6](https://github.com/bakerkj/ha-recorder-tuning/commit/f23d0e6e77744550eb7ce2ffe4de46eeeb7f1a87))
+* **claude:** replace install-defaults with tailored workflows ([f010cc9](https://github.com/bakerkj/ha-recorder-tuning/commit/f010cc9868f04c9ce418f2837db65e448255b727))
+* drop python-version-file from setup-uv step ([039dbcb](https://github.com/bakerkj/ha-recorder-tuning/commit/039dbcbfda4c4b28db2c19253931ef672559f50f))
+* drop python-version-file from setup-uv step ([64c106f](https://github.com/bakerkj/ha-recorder-tuning/commit/64c106f32935481fd6730af26f65f0db24a7100b))
+* **ha-dev-compat:** enable uv cache for pinned-dep install ([5152754](https://github.com/bakerkj/ha-recorder-tuning/commit/51527541541b17860a7eaa5edd5705cfba5e36c4))
+* **ha-dev-compat:** enable uv cache for pinned-dep install ([2cda5d3](https://github.com/bakerkj/ha-recorder-tuning/commit/2cda5d3e07692f9e412ee0647a969c1a7ba9da1c))
+* **prek:** cache prek hook envs across runs ([f4aad32](https://github.com/bakerkj/ha-recorder-tuning/commit/f4aad32b69244a6b8b1a3f634b048b09d97cf10d))
+* **prek:** cache prek hook envs across runs ([29d29f7](https://github.com/bakerkj/ha-recorder-tuning/commit/29d29f7a298c979c849fd1925f00e577e4ab1a63))
+
 ## [0.0.12](https://github.com/bakerkj/ha-recorder-tuning/compare/v0.0.11...v0.0.12) (2026-05-24)
 
 
