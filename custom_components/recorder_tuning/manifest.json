@@ -1,21 +1,20 @@
 {
   "domain": "recorder_tuning",
   "name": "Recorder Tuning",
-  "version": "0.0.13",
-  "config_flow": false,
-  "integration_type": "service",
-  "iot_class": "local_polling",
-  "dependencies": [
-    "recorder"
-  ],
   "after_dependencies": [
     "recorder"
   ],
-  "documentation": "https://github.com/bakerkj/ha-recorder-tuning",
-  "issue_tracker": "https://github.com/bakerkj/ha-recorder-tuning/issues",
   "codeowners": [
     "@bakerkj"
   ],
+  "config_flow": false,
+  "dependencies": [
+    "recorder"
+  ],
+  "documentation": "https://github.com/bakerkj/ha-recorder-tuning",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/bakerkj/ha-recorder-tuning/issues",
   "requirements": [],
-  "homeassistant": "2024.11.0"
+  "version": "0.0.13"
 }
