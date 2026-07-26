@@ -1,5 +1,6 @@
 {
   "name": "Recorder Tuning",
+  "homeassistant": "2024.11.0",
   "render_readme": true,
   "zip_release": true,
   "filename": "recorder_tuning.zip"
