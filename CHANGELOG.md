@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.14](https://github.com/bakerkj/ha-recorder-tuning/compare/v0.0.13...v0.0.14) (2026-07-26)
+
+
+### Continuous Integration
+
+* add hassfest manifest validation ([#91](https://github.com/bakerkj/ha-recorder-tuning/issues/91)) ([7eb31f2](https://github.com/bakerkj/ha-recorder-tuning/commit/7eb31f286819d92c56348ecb102ff809ec1f87f6))
+
 ## [0.0.13](https://github.com/bakerkj/ha-recorder-tuning/compare/v0.0.12...v0.0.13) (2026-07-24)
 
 
