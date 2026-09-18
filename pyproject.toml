@@ -12,7 +12,7 @@ dev = [
 ]
 
 [tool.uv]
-required-version = "==0.12.14"
+required-version = "==0.12.15"
 prerelease = "allow"
 
 [tool.mypy]
