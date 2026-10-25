@@ -10,6 +10,7 @@ on:
       - "custom_components/recorder_tuning/__init__.py"
       - "tests/test_ha_signature_compat.py"
       - ".github/workflows/ha-dev-compat.yaml"
+      - ".github/scripts/run_signature_guard.py"
 
 jobs:
   ha-dev-signature:
@@ -36,5 +37,6 @@ jobs:
           uv pip install --upgrade \
             "homeassistant @ git+https://github.com/home-assistant/core.git@dev"
       - name: Run HA signature guard
-        run:
-          uv run --no-sync python -m pytest tests/test_ha_signature_compat.py -v
+        # Shim pre-aliases httpx2 and skips the HA test plugin and conftest.py;
+        # see the shim for the full rationale.
+        run: uv run --no-sync python .github/scripts/run_signature_guard.py
