@@ -11,7 +11,12 @@ separate loader to test.
 from __future__ import annotations
 
 import pytest
-import voluptuous as vol
+
+try:
+    # The library the config schema is built with, so this is the Invalid it raises.
+    import probatio as vol
+except ImportError:  # HA < 2026.9
+    import voluptuous as vol  # type: ignore[no-redef]
 
 
 def _validate(domain_block: dict) -> dict:

@@ -11,15 +11,22 @@ import re
 from datetime import UTC, datetime, time, timedelta
 from typing import Any
 
-import voluptuous as vol
 from homeassistant.config import async_hass_config_yaml
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.core import Event, HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
+
+try:
+    # HA 2026.9 replaced voluptuous with the API-compatible probatio and types
+    # service schemas as probatio; build ours with whichever this HA ships.
+    import probatio as vol
+except ImportError:  # HA < 2026.9
+    import voluptuous as vol  # type: ignore[no-redef]
 
 from .const import (
     CONF_DEVICE_IDS,
@@ -301,6 +308,14 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     manager = RecorderTuningManager(hass, domain_config)
     hass.data.setdefault(DOMAIN, {})["manager"] = manager
     await manager.async_setup()
+
+    @callback
+    def _cancel_timer_on_stop(_event: Event) -> None:
+        manager.async_unload()
+
+    # YAML-only, so there is no config entry unload to hang this on: cancel the
+    # nightly purge timer when HA stops instead of leaving it scheduled.
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _cancel_timer_on_stop)
 
     hass.services.async_register(
         DOMAIN,
@@ -1086,7 +1101,8 @@ class RecorderTuningManager:
             wanted_dev = set(device_integrations)
             dev_reg = dr.async_get(self.hass)
             matching_device_ids: set[str] = set()
-            for device in dev_reg.devices.values():
+            # Iterating yields entries; .values() is deprecated as of HA 2026.10.
+            for device in dev_reg.devices:
                 domains = {
                     cfg_entry.domain
                     for cfg_entry_id in device.config_entries
