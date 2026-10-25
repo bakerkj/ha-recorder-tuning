@@ -685,7 +685,8 @@ def _hass_with_devices(devices, entry_domains):
     hass = MagicMock()
     hass.config_entries.async_get_entry.side_effect = _get_entry
     dev_reg = MagicMock()
-    dev_reg.devices = {d.id: d for d in devices}
+    # HA 2026.10's registry.devices iterates DeviceEntry values, not ids.
+    dev_reg.devices = list(devices)
     return hass, dev_reg
 
 
